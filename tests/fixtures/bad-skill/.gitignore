@@ -1,0 +1,2 @@
+# local-data.json holds the test fixture, but it is ignored, so a fresh clone does not have it
+local-data.json

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<title>skill-ci: good-skill</title><style>
+:root { --bg:#f6f8fa; --card:#fff; --ink:#1f2328; --muted:#59636e; --line:#d1d9e0; --code:#eff2f5;
+  --pass:#1a7f37; --pass-bg:#dafbe1; --warn:#9a6700; --warn-bg:#fff8c5; --fail:#d1242f; --fail-bg:#ffebe9; --skip:#59636e; --skip-bg:#eff2f5; --note:#0969da; --note-bg:#ddf4ff; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0d1117; --card:#151b23; --ink:#f0f6fc; --muted:#9198a1; --line:#3d444d; --code:#262c36;
+  --pass:#3fb950; --pass-bg:#12261e; --warn:#d29922; --warn-bg:#272115; --fail:#f85149; --fail-bg:#25171c; --skip:#9198a1; --skip-bg:#212830; --note:#4493f8; --note-bg:#121d2f; } }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+main { max-width: 1012px; margin: 24px auto; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 8px 24px 20px; }
+.frame { font-size:12px; color:var(--muted); border-bottom:1px solid var(--line); margin:0 -24px 8px; padding:10px 24px; display:flex; gap:8px; align-items:center; }
+.frame b { color: var(--ink); font-weight: 600; }
+h2 { font-size: 1.5em; border-bottom: 1px solid var(--line); padding-bottom: .3em; margin: 16px 0 16px; font-weight: 600; }
+h3 { font-size: 1.25em; margin: 24px 0 12px; font-weight: 600; }
+p { margin: 0 0 16px; }
+code { font: 85%/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--code); padding: .2em .4em; border-radius: 6px; }
+pre { background: var(--code); border-radius: 6px; padding: 12px 16px; overflow: auto; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+pre code { background: none; padding: 0; font-size: 100%; }
+table { border-collapse: collapse; margin: 0 0 16px; display: block; overflow-x: auto; max-width: 100%; }
+th, td { border: 1px solid var(--line); padding: 6px 13px; vertical-align: top; text-align: left; }
+th { font-weight: 600; }
+tr:nth-child(2n) td { background: color-mix(in srgb, var(--code) 45%, transparent); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+sub { color: var(--muted); font-size: 85%; vertical-align: baseline; }
+sub code { font-size: 90%; }
+a { color: var(--note); text-decoration: none; } a:hover { text-decoration: underline; }
+.pill { display:inline-block; white-space:nowrap; font-weight:600; font-size:12px; padding:0 8px; border-radius:2em; line-height:20px; }
+.pill.pass { color:var(--pass); background:var(--pass-bg); } .pill.warn, .pill.warning { color:var(--warn); background:var(--warn-bg); }
+.pill.fail, .pill.error { color:var(--fail); background:var(--fail-bg); } .pill.skip { color:var(--skip); background:var(--skip-bg); }
+.pill.notice { color:var(--note); background:var(--note-bg); }
+details { margin: 0 0 16px; } summary { cursor: pointer; color: var(--muted); }
+@media (max-width: 640px) { main { margin: 0; border-radius: 0; border-width: 0; padding: 8px 16px 16px; } .frame { margin: 0 -16px 8px; padding: 10px 16px; } }
+</style></head>
+<body><main><div class="frame"><b>skill-ci summary</b></div>
+<h2>skill-ci: <code>good-skill</code> passed</h2>
+<p><strong>0 errors, 0 warnings, 0 notices</strong> across 8 checks in 0.3 s.</p>
+<table><thead><tr><th>Result</th><th>Check</th><th class="num">Errors</th><th class="num">Warnings</th><th>Details</th></tr></thead><tbody><tr><td><span class="pill pass">✓ pass</span></td><td>SKILL.md</td><td class="num"></td><td class="num"></td><td>SKILL.md</td></tr><tr><td><span class="pill pass">✓ pass</span></td><td>README</td><td class="num"></td><td class="num"></td><td>README.md</td></tr><tr><td><span class="pill pass">✓ pass</span></td><td>Licence</td><td class="num"></td><td class="num"></td><td>MIT</td></tr><tr><td><span class="pill pass">✓ pass</span></td><td>Secrets and personal data</td><td class="num"></td><td class="num"></td><td>11 files scanned</td></tr><tr><td><span class="pill pass">✓ pass</span></td><td>Script safety</td><td class="num"></td><td class="num"></td><td>6 files checked</td></tr><tr><td><span class="pill pass">✓ pass</span></td><td>Media size budget</td><td class="num"></td><td class="num"></td><td>1 media files, 0.00 MB of 15 MB</td></tr><tr><td><span class="pill pass">✓ pass</span></td><td>Fresh-clone install test</td><td class="num"></td><td class="num"></td><td><code>npm test</code> passed in 0.2 s</td></tr><tr><td><span class="pill pass">✓ pass</span></td><td>Demo</td><td class="num"></td><td class="num"></td><td>1 output file(s)</td></tr></tbody></table>
+<h3>Fresh-clone install test</h3>
+<details><summary>Test output: <code>npm test</code>, exit 0, 0.2 s</summary>
+<pre><code>
+&gt; good-skill@1.0.0 test
+&gt; node --test
+
+✔ greets by name (1.378322ms)
+✔ falls back to world (0.160618ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 78.41235</code></pre>
+</details>
+<h3>Demo</h3>
+<p>Demo outputs (uploaded as a workflow artifact): <code>out/hello.txt</code> (0.00 MB)</p>
+<details><summary>Demo output: <code>node scripts/hello.mjs out/hello.txt Ada</code>, exit 0, 0 s</summary>
+<pre><code>(no output)</code></pre>
+</details>
+<p><sub>skill-ci 0.1.0 · config: .skill-ci.yml · findings marked warning are worth a look, not proof of a problem</sub></p>
+</main></body></html>

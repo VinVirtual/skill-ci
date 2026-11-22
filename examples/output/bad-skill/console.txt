@@ -1,0 +1,87 @@
+skill-ci 0.1.0  bad-skill  bad-skill
+  FAIL SKILL.md                    SKILL.md
+         error   SKILL.md:2  name "Bad_Skill" is not kebab-case (lowercase letters, digits and single hyphens).  [skill-md/name-not-kebab]
+                 fix: Try "bad-skill".
+         error   SKILL.md:2  name "Bad_Skill" does not match the repository name "bad-skill".  [skill-md/name-mismatch]
+                 fix: Claude Code finds a skill by its folder; installing with git clone gives the folder the repository's name. Rename one so both read "bad-skill" or "Bad_Skill".
+         error   SKILL.md:1  The frontmatter has no description; Claude uses it to decide when to load the skill.  [skill-md/description-missing]
+         error   SKILL.md:7  Absolute home path "/home/alice/..." will not exist on anyone else's machine.  [skill-md/home-path]
+                 fix: Use a path relative to the skill folder, or ~/.claude/skills/<name>/.
+         error   SKILL.md:5  Linked file "references/guide.md" is not in the repository.  [skill-md/missing-file]
+         warning SKILL.md:7  `scripts/missing-helper.py` names a path that is not in the repository.  [skill-md/missing-path]
+  FAIL README                      README.md
+         warning README.md:1  The README is only 53 characters; say what the skill does, how to install it and how to use it.  [readme/too-short]
+         warning README.md:1  The README has no install command.  [readme/no-install]
+                 fix: For example: git clone https://github.com/<you>/bad-skill ~/.claude/skills/bad-skill
+         warning README.md:1  The README never mentions the licence.  [readme/no-licence-section]
+                 fix: Add a "## License" section that names it and links to LICENSE.
+         error   README.md:3  Image "docs/demo.gif" is not in the repository, so it shows as broken on GitHub.  [readme/missing-image]
+  FAIL Licence                     missing
+         error   LICENSE  No LICENSE file at the repository root; without one nobody may legally reuse the skill.  [license/missing]
+                 fix: Add a LICENSE file (MIT is common for skills).
+  FAIL Secrets and personal data   11 files scanned
+         error   config.js:2  Looks like an AWS access key id: AKIA**** (20 chars).  [secrets/aws-access-key]
+         error   notes/maintainers.md:3  Email address j***@quietmail.net (personal data in a public repo).  [secrets/email]
+  WARN Script safety               9 files checked
+         warning .github/workflows/ci.yml:2  `pull_request_target` runs with secrets and write access on code from forks.  [footguns/pull-request-target]
+                 fix: Use pull_request unless you are sure no fork code is checked out or run.
+         warning .github/workflows/ci.yml:7  Action actions/checkout@v4 is pinned to a movable tag or branch, not a commit SHA.  [footguns/unpinned-action]
+                 fix: Pin to the full 40-character commit SHA, e.g. uses: actions/checkout@<sha> # v4.2.2
+         warning .github/workflows/ci.yml:8  Untrusted event text is pasted into a run: script (script injection).  [footguns/script-injection]
+                 fix: Pass it through env: and use "$VAR" in the script.
+         warning .github/workflows/ci.yml:1  The workflow sets no top-level permissions, so its token gets the repository default (often write).  [footguns/no-permissions]
+                 fix: Add "permissions: contents: read" at the top level.
+         warning scripts/convert.mjs:5  `exec()` runs its command string through a shell, and this one builds the string from variables (command injection if any of them comes from input).  [footguns/exec-string]
+                 fix: Use execFile/spawn with an argument list instead.
+         warning scripts/convert.mjs:6  `shell: true` runs the command through a shell, so spaces, quotes, $() and ; in any argument are interpreted.  [footguns/shell-true]
+                 fix: Pass the program and an argument list with shell off.
+         warning scripts/convert.mjs:7  `eval`/`new Function` runs a string as code.  [footguns/eval]
+         warning scripts/convert.sh:3  Downloads a script and pipes it straight into a shell; nothing checks what was downloaded.  [footguns/curl-pipe-shell]
+                 fix: Download to a file, verify a checksum or signature, then run it.
+         warning scripts/convert.sh:4  `python -c` without -I: Python puts the current folder first on its import path, so a planted json.py (or any module name) in that folder runs instead.  [footguns/python-c-without-I]
+                 fix: Use `python -I -c ...` (isolated mode).
+         warning scripts/convert.sh:5  `rm -r` on "$VAR/..." deletes from / when the variable is empty.  [footguns/rm-rf-variable]
+                 fix: Use "${VAR:?}/..." so an empty variable stops the script.
+         warning scripts/convert.sh:6  Mode 777 lets every user on the machine change the file.  [footguns/chmod-777]
+         warning scripts/helper.py:8  `shell=True` runs the command through a shell, so spaces, quotes, $() and ; in any argument are interpreted.  [footguns/shell-true]
+                 fix: Pass a list of arguments with shell=False.
+         warning scripts/helper.py:9  `os.system`/`os.popen` runs a string through a shell.  [footguns/os-system]
+                 fix: Use subprocess.run([...]) with a list of arguments.
+         warning scripts/helper.py:11  `yaml.load` without SafeLoader can build arbitrary Python objects from the file.  [footguns/unsafe-yaml-load]
+                 fix: Use yaml.safe_load.
+  PASS Media size budget           0 media files, 0.00 MB of 15 MB
+  FAIL Fresh-clone install test    `npm test` failed in 0.3 s
+         error   In a fresh clone, the test command `npm test` failed with exit code 1.  [install/test-failed]
+                 fix: Run it in a fresh clone yourself: a file that is ignored or never committed is the usual cause.
+           | 
+           | > bad-skill@0.0.1 test
+           | > node --test
+           | 
+           | ✖ reads the local data file (1.290218ms)
+           | ℹ tests 1
+           | ℹ suites 0
+           | ℹ pass 0
+           | ℹ fail 1
+           | ℹ cancelled 0
+           | ℹ skipped 0
+           | ℹ todo 0
+           | ℹ duration_ms 84.809743
+           | 
+           | ✖ failing tests:
+           | 
+           | test at tests/data.test.mjs:5:1
+           | ✖ reads the local data file (1.290218ms)
+           |   Error: ENOENT: no such file or directory, open '/tmp/skill-ci-clone-2Y1UvN/bad-skill/local-data.json'
+           |       at readFileSync (node:fs:483:20)
+           |       at TestContext.<anonymous> (file:///tmp/skill-ci-clone-2Y1UvN/bad-skill/tests/data.test.mjs:6:27)
+           |       at Test.runInAsyncScope (node:async_hooks:227:14)
+           |       at Test.run (node:internal/test_runner/test:1402:25)
+           |       at Test.start (node:internal/test_runner/test:1262:17)
+           |       at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+           |     errno: -2,
+           |     code: 'ENOENT',
+           |     syscall: 'open',
+           |     path: '/tmp/skill-ci-clone-2Y1UvN/bad-skill/local-data.json'
+           |   }
+  SKIP Demo                        no demo.command set
+  Result: FAIL  10 errors, 18 warnings, 0 notices  (0.3 s)

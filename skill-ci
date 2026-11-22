@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# skill-ci launcher: skill-ci <command> ...   (run "skill-ci help" for the list)
+exec node "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/src/cli.mjs" "$@"

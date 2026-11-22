@@ -1,0 +1,75 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Unit tests
+        run: ./skill-ci test
+      - name: Environment check
+        run: ./check_env.sh
+
+  action:
+    # Runs the action itself, the way a skill repository would use it, on both fixtures and on this repository.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Make the fixtures into git repositories
+        run: |
+          mkdir -p .scratch
+          for f in good-skill bad-skill; do
+            cp -r "tests/fixtures/$f" ".scratch/$f"
+            git -C ".scratch/$f" init -q -b main
+            git -C ".scratch/$f" add -A
+            git -C ".scratch/$f" -c user.name=skill-ci -c user.email=skill-ci@users.noreply.github.com commit -q -m fixture
+          done
+      - name: Good fixture (must pass, uploads its demo output)
+        id: good
+        uses: ./
+        with:
+          path: .scratch/good-skill
+          badge-file: .scratch/badge.json
+          artifact-name: good-skill-demo
+      - name: Bad fixture (must fail)
+        id: bad
+        continue-on-error: true
+        uses: ./
+        with:
+          path: .scratch/bad-skill
+          run-commands: "false"
+      - name: Check the outcomes
+        env:
+          GOOD: ${{ steps.good.outputs.result }}
+          BAD: ${{ steps.bad.outputs.result }}
+          BAD_ERRORS: ${{ steps.bad.outputs.errors }}
+          BAD_OUTCOME: ${{ steps.bad.outcome }}
+        run: |
+          echo "good=$GOOD bad=$BAD bad-errors=$BAD_ERRORS bad-outcome=$BAD_OUTCOME"
+          cat .scratch/badge.json
+          test "$GOOD" = pass
+          test "$BAD" = fail
+          test "$BAD_OUTCOME" = failure
+          test "$BAD_ERRORS" -ge 5
+      - name: This repository
+        uses: ./
+        with:
+          path: .

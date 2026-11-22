@@ -1,0 +1,88 @@
+name: skill-ci
+description: Check a Claude Code skill repository before publishing - SKILL.md, README, licence, secrets, fresh-clone tests, demo, media size and script safety.
+author: Lashvin Manimaran
+branding:
+  icon: check-square
+  color: green
+
+inputs:
+  path:
+    description: Folder of the skill repository, relative to the workspace.
+    default: "."
+  config:
+    description: Config file (default .skill-ci.yml in path).
+    default: ""
+  fail-on:
+    description: error, warning or never. Empty uses the config (default error).
+    default: ""
+  run-commands:
+    description: Set to "false" to skip the fresh-clone install test and the demo (no repository code is run).
+    default: "true"
+  badge-file:
+    description: Write a shields.io endpoint badge JSON to this path (relative to the workspace).
+    default: ""
+  artifact-name:
+    description: Name of the workflow artifact that holds the demo outputs.
+    default: skill-ci-demo
+  node-version:
+    description: Node.js version to set up. Empty uses the runner's node (20 or newer).
+    default: "22"
+
+outputs:
+  result:
+    description: pass, warn or fail.
+    value: ${{ steps.check.outputs.result }}
+  errors:
+    description: Number of errors.
+    value: ${{ steps.check.outputs.errors }}
+  warnings:
+    description: Number of warnings.
+    value: ${{ steps.check.outputs.warnings }}
+  badge:
+    description: Absolute path of the badge JSON, when badge-file is set.
+    value: ${{ steps.check.outputs.badge }}
+
+runs:
+  using: composite
+  steps:
+    - if: inputs.node-version != ''
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - id: check
+      shell: bash
+      env:
+        SKILL_CI_PATH: ${{ inputs.path }}
+        SKILL_CI_CONFIG: ${{ inputs.config }}
+        SKILL_CI_FAIL_ON: ${{ inputs.fail-on }}
+        SKILL_CI_RUN: ${{ inputs.run-commands }}
+        SKILL_CI_BADGE: ${{ inputs.badge-file }}
+      run: |
+        args=(check "$SKILL_CI_PATH" --github --no-color)
+        [ -n "$SKILL_CI_CONFIG" ] && args+=(--config "$SKILL_CI_CONFIG")
+        [ -n "$SKILL_CI_FAIL_ON" ] && args+=(--fail-on "$SKILL_CI_FAIL_ON")
+        [ "$SKILL_CI_RUN" = "false" ] && args+=(--no-run)
+        [ -n "$SKILL_CI_BADGE" ] && args+=(--badge "$SKILL_CI_BADGE")
+        set +e
+        node "$GITHUB_ACTION_PATH/src/cli.mjs" "${args[@]}" --verbose
+        code=$?
+        set -e
+        # 0 pass, 1 checks failed, 2 usage/config error; the verdict is applied after the artifact upload
+        echo "code=$code" >> "$GITHUB_OUTPUT"
+
+    - if: steps.check.outputs.demo-files != ''
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.check.outputs.demo-files }}
+        if-no-files-found: warn
+
+    - shell: bash
+      env:
+        SKILL_CI_CODE: ${{ steps.check.outputs.code }}
+      run: |
+        if [ "$SKILL_CI_CODE" != "0" ]; then
+          echo "skill-ci found problems (exit $SKILL_CI_CODE); see the job summary." >&2
+          exit 1
+        fi

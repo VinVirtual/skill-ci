@@ -1,0 +1,4 @@
+# The demo writes a greeting; CI uploads it as an artifact.
+demo:
+  command: node scripts/hello.mjs out/hello.txt Ada
+  outputs: [ "out/*.txt" ]

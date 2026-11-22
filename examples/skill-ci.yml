@@ -1,0 +1,28 @@
+# Copy to .github/workflows/skill-ci.yml in your skill repository.
+# Checks SKILL.md, README, LICENSE, secrets, script safety and media size, runs your tests in a fresh clone,
+# runs the demo from .skill-ci.yml (if any) and uploads its files, and writes the job summary.
+name: skill-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  skill-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Pin skill-ci to a full commit SHA, like the other actions here (a tag can be moved).
+      - uses: VinVirtual/skill-ci@v0.1.0
+        with:
+          path: .
+          # fail-on: warning          # stricter: warnings fail the job too
+          # run-commands: "false"     # only read files; skip the fresh-clone test and the demo
+          # badge-file: badge.json    # write a shields.io endpoint badge (publish it, e.g. to a gist)

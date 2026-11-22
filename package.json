@@ -1,0 +1,11 @@
+{
+  "name": "skill-ci",
+  "version": "0.1.0",
+  "description": "Check a Claude Code skill repository the way a careful maintainer would before publishing: SKILL.md, README, licence, secrets, a fresh-clone install test, a demo, media size and script safety. A GitHub Action and a local CLI.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Lashvin Manimaran",
+  "bin": { "skill-ci": "src/cli.mjs" },
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node src/cli.mjs test" }
+}
