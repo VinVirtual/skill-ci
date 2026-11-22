@@ -20,8 +20,8 @@ skill-ci 0.1.0  bad-skill  bad-skill
          error   LICENSE  No LICENSE file at the repository root; without one nobody may legally reuse the skill.  [license/missing]
                  fix: Add a LICENSE file (MIT is common for skills).
   FAIL Secrets and personal data   11 files scanned
-         error   config.js:2  Looks like an AWS access key id: AKIA**** (20 chars).  [secrets/aws-access-key]
-         error   notes/maintainers.md:3  Email address j***@quietmail.net (personal data in a public repo).  [secrets/email]
+         error   config.js:2  Looks like an AWS access key id: [hidden, 20 chars].  [secrets/aws-access-key]
+         error   notes/maintainers.md:3  Email address at quietmail.net (personal data in a public repo).  [secrets/email]
   WARN Script safety               9 files checked
          warning .github/workflows/ci.yml:2  `pull_request_target` runs with secrets and write access on code from forks.  [footguns/pull-request-target]
                  fix: Use pull_request unless you are sure no fork code is checked out or run.
@@ -50,14 +50,14 @@ skill-ci 0.1.0  bad-skill  bad-skill
          warning scripts/helper.py:11  `yaml.load` without SafeLoader can build arbitrary Python objects from the file.  [footguns/unsafe-yaml-load]
                  fix: Use yaml.safe_load.
   PASS Media size budget           0 media files, 0.00 MB of 15 MB
-  FAIL Fresh-clone install test    `npm test` failed in 0.3 s
+  FAIL Fresh-clone install test    `npm test` failed in 0.5 s
          error   In a fresh clone, the test command `npm test` failed with exit code 1.  [install/test-failed]
                  fix: Run it in a fresh clone yourself: a file that is ignored or never committed is the usual cause.
            | 
            | > bad-skill@0.0.1 test
            | > node --test
            | 
-           | ✖ reads the local data file (1.290218ms)
+           | ✖ reads the local data file (1.302348ms)
            | ℹ tests 1
            | ℹ suites 0
            | ℹ pass 0
@@ -65,15 +65,15 @@ skill-ci 0.1.0  bad-skill  bad-skill
            | ℹ cancelled 0
            | ℹ skipped 0
            | ℹ todo 0
-           | ℹ duration_ms 84.809743
+           | ℹ duration_ms 129.876945
            | 
            | ✖ failing tests:
            | 
            | test at tests/data.test.mjs:5:1
-           | ✖ reads the local data file (1.290218ms)
-           |   Error: ENOENT: no such file or directory, open '/tmp/skill-ci-clone-2Y1UvN/bad-skill/local-data.json'
+           | ✖ reads the local data file (1.302348ms)
+           |   Error: ENOENT: no such file or directory, open '/tmp/skill-ci-clone-FUmdR4/bad-skill/local-data.json'
            |       at readFileSync (node:fs:483:20)
-           |       at TestContext.<anonymous> (file:///tmp/skill-ci-clone-2Y1UvN/bad-skill/tests/data.test.mjs:6:27)
+           |       at TestContext.<anonymous> (file:///tmp/skill-ci-clone-FUmdR4/bad-skill/tests/data.test.mjs:6:27)
            |       at Test.runInAsyncScope (node:async_hooks:227:14)
            |       at Test.run (node:internal/test_runner/test:1402:25)
            |       at Test.start (node:internal/test_runner/test:1262:17)
@@ -81,7 +81,7 @@ skill-ci 0.1.0  bad-skill  bad-skill
            |     errno: -2,
            |     code: 'ENOENT',
            |     syscall: 'open',
-           |     path: '/tmp/skill-ci-clone-2Y1UvN/bad-skill/local-data.json'
+           |     path: '/tmp/skill-ci-clone-FUmdR4/bad-skill/local-data.json'
            |   }
   SKIP Demo                        no demo.command set
-  Result: FAIL  10 errors, 18 warnings, 0 notices  (0.3 s)
+  Result: FAIL  10 errors, 18 warnings, 0 notices  (0.5 s)

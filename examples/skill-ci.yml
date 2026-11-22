@@ -1,6 +1,12 @@
 # Copy to .github/workflows/skill-ci.yml in your skill repository.
 # Checks SKILL.md, README, LICENSE, secrets, script safety and media size, runs your tests in a fresh clone,
 # runs the demo from .skill-ci.yml (if any) and uploads its files, and writes the job summary.
+#
+# Security (see "Security" in the skill-ci README):
+# - Use `pull_request`, never `pull_request_target`: the latter runs fork code with secrets and a write token.
+# - Keep `persist-credentials: false` and `permissions: contents: read`, and give this job no secrets.
+# - For fork pull requests skill-ci runs no repository command and ignores the overrides a pull request could
+#   add to .skill-ci.yml / .skill-ci-allow; set lock-config: "true" to ignore them on every run.
 name: skill-ci
 
 on:
@@ -19,10 +25,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Pin skill-ci to a full commit SHA, like the other actions here (a tag can be moved).
-      - uses: VinVirtual/skill-ci@v0.1.0
+      # Replace the zeros with the full commit SHA of the skill-ci release you use (a tag can be moved).
+      - uses: VinVirtual/skill-ci@0000000000000000000000000000000000000000 # v0.1.0
         with:
           path: .
           # fail-on: warning          # stricter: warnings fail the job too
           # run-commands: "false"     # only read files; skip the fresh-clone test and the demo
+          # lock-config: "true"       # ignore in-repo ignore/disable/fail-on/allowlists/inline allow comments
           # badge-file: badge.json    # write a shields.io endpoint badge (publish it, e.g. to a gist)

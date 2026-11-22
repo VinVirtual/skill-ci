@@ -30,13 +30,17 @@ $S/examples/                 a workflow to copy, and the example reports
 - **SKILL.md**: frontmatter present and valid YAML; `name` present, kebab-case, at most 64 characters, matching the folder (or the repository name for a root SKILL.md); `description` present, at most 1024 characters, no XML tags, says when to use it; a body; linked files exist; inline-code paths under the skill's own folders exist; no absolute home paths. Every SKILL.md in the repo is checked, so plugin repos with `skills/<name>/SKILL.md` work.
 - **README**: present; an install command; `git clone ... ~/.claude/skills/<folder>` lands in a folder named like the skill; mentions the licence; relative links and images exist; a workflow badge points at a workflow that exists.
 - **LICENSE**: present, recognised (MIT, Apache-2.0, GPL, BSD, ISC, MPL, Unlicense, CC0), no `[year]` placeholders, agrees with `package.json`.
-- **Secrets and personal data**: private keys, AWS, GitHub, Anthropic, OpenAI, Slack, Google, Stripe, Hugging Face and npm tokens, JWTs, passwords in URLs (errors); hard-coded `password = "..."` (warning); personal emails (noreply and example domains are fine); home paths that name a user; committed `.env`, `.pem` or `id_rsa` files. Values are masked in every report.
+- **Secrets and personal data**: private keys, AWS, GitHub, Anthropic, OpenAI, Slack, Google, Stripe, Hugging Face and npm tokens, JWTs, passwords in URLs (errors); hard-coded `password = "..."` (warning); personal emails (noreply and example domains are fine); home paths that name a user; committed `.env`, `.pem` or `id_rsa` files. Values are never shown, only their type and length.
 - **Script safety** (warnings): `python -c` without `-I`, `shell: true` / `shell=True`, child_process `exec`, `os.system`, `eval`, `curl | sh`, `rm -rf "$VAR"/`, `chmod 777`, TLS checks off, `yaml.load`; in workflows, actions not pinned by SHA, `pull_request_target`, no `permissions:`, event text pasted into `run:`.
 - **Media budget**: committed images, video, audio, 3D and PDF files; 5 MB per file and 15 MB in total by default.
 
 ## Options
 
 `--no-run`, `--only skill-md,readme`, `--fail-on error|warning|never`, `--name <expected-name>`, `--summary out.md`, `--html out.html`, `--badge badge.json`, `--json`, `--timeout <seconds>`, `--keep-clone`, `--verbose`. Exit codes: 0 passed, 1 failed, 2 usage or config error.
+
+## Security
+
+The fresh-clone test and demo run the repo's own code, in a throwaway clone with a scrubbed environment (no tokens, no `GITHUB_*`/`ACTIONS_*`) and hard time limits. In CI, fork pull requests and `pull_request_target` never run commands, and in-repo overrides are ignored for them. `--lock-config` does that everywhere. Recommend `pull_request` (never `pull_request_target`), `persist-credentials: false`, `permissions: contents: read` and no secrets in the job, as in `examples/skill-ci.yml`.
 
 ## False positives
 

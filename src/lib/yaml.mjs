@@ -91,13 +91,14 @@ function closesAt(s, q) {
 
 /** Parses a flow collection such as [a, "b", {c: 1}]. */
 export function parseFlow(s, line) {
-  let i = 0
+  let i = 0, depth = 0
   const ws = () => { while (i < s.length && /\s/.test(s[i])) i++ }
   const fail = (m) => { throw new YamlError(m, line) }
   function value(stops) {
     ws()
-    if (s[i] === '[') return list()
-    if (s[i] === '{') return map()
+    if ((s[i] === '[' || s[i] === '{') && ++depth > MAX_DEPTH) fail(`nested deeper than ${MAX_DEPTH} levels`)
+    if (s[i] === '[') { const v = list(); depth--; return v }
+    if (s[i] === '{') { const v = map(); depth--; return v }
     if (s[i] === '"' || s[i] === "'") {
       const q = s[i]; let j = i + 1
       for (; j < s.length; j++) {
@@ -133,7 +134,7 @@ export function parseFlow(s, line) {
       ws()
       if (s[i] !== ':') fail('expected key: value in {map}')
       i++
-      const k = String(key)
+      const k = checkKey(String(key), line)
       if (Object.hasOwn(out, k)) fail(`duplicate key "${k}"`)
       out[k] = value(',}')
       ws()
@@ -143,24 +144,49 @@ export function parseFlow(s, line) {
   }
   const out = value('')
   ws()
-  if (i < s.length) fail(`unexpected text after the closing bracket: ${s.slice(i, i + 20)}`)
+  if (i < s.length) fail('unexpected text after the closing bracket')
   return out
 }
 
-/** Bracket depth of a flow value (outside quotes), to know when it continues on the next line. */
-function flowDepth(s) {
-  let depth = 0, quote = null
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i]
-    if (quote) { if (c === '\\' && quote === '"') i++; else if (c === quote) quote = null; continue }
-    if (c === '"' || c === "'") quote = c
-    else if (c === '[' || c === '{') depth++
-    else if (c === ']' || c === '}') depth--
-  }
-  return { depth, open: quote !== null }
+export const MAX_DEPTH = 64
+export const MAX_LINE = 8192
+const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+/** Refuses keys that would reach an object's prototype. */
+function checkKey(key, line) {
+  if (RESERVED_KEYS.has(key)) throw new YamlError(`the key "${key}" is not allowed`, line)
+  return key.length > 200 ? (() => { throw new YamlError('a key is longer than 200 characters', line) })() : key
 }
 
-const KEY_RE = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s'"#\-[{?:][^:]*?|-[^\s:][^:]*?|\?[^\s:][^:]*?)\s*:(?:\s+(.*)|)$/
+/** Incremental scanner for a multi-line flow value: feed each line once; open says whether it continues. */
+function flowScanner() {
+  let depth = 0, quote = null
+  return (s) => {
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i]
+      if (quote) { if (c === '\\' && quote === '"') i++; else if (c === quote) quote = null; continue }
+      if (c === '"' || c === "'") quote = c
+      else if (c === '[' || c === '{') depth++
+      else if (c === ']' || c === '}') depth--
+    }
+    return depth > 0 || quote !== null
+  }
+}
+
+/** Incremental scanner for a multi-line quoted scalar: true once the closing quote has been seen. */
+function quoteScanner(q) {
+  let first = true, closed = false
+  return (s) => {
+    for (let i = first ? 1 : 0; i < s.length && !closed; i++) {
+      if (q === '"' && s[i] === '\\') { i++; continue }
+      if (s[i] === q) { if (q === "'" && s[i + 1] === "'") { i++; continue } closed = true }
+    }
+    first = false
+    return closed
+  }
+}
+
+const KEY_RE = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s'"#\-[{?:][^:]*|-[^\s:][^:]*|\?[^\s:][^:]*):(?:\s+(.*)|)$/
 
 /** Parses a YAML document into plain objects, lists and scalars. Throws YamlError with a line number. */
 export function parseYaml(text, { lineOffset = 0 } = {}) {
@@ -170,6 +196,7 @@ export function parseYaml(text, { lineOffset = 0 } = {}) {
   const err = (m) => new YamlError(m, lineNo())
 
   raw.forEach((l, n) => {
+    if (l.length > MAX_LINE) throw new YamlError(`line longer than ${MAX_LINE} characters`, n + 1 + lineOffset)
     if (/^ *\t/.test(l) && !isBlank(l)) throw new YamlError('tab used for indentation; use spaces', n + 1 + lineOffset)
     if (/^(---|\.\.\.)\s*(#.*)?$/.test(l) && n > 0) throw new YamlError('multiple documents are not supported', n + 1 + lineOffset)
   })
@@ -178,6 +205,11 @@ export function parseYaml(text, { lineOffset = 0 } = {}) {
   const skip = () => { while (i < raw.length && isBlank(raw[i])) i++ }
   const isItem = (body) => body === '-' || body.startsWith('- ') || body.startsWith('-\t')
 
+  let level = 0
+  const nested = (fn) => (ind) => {
+    if (++level > MAX_DEPTH) throw err(`nested deeper than ${MAX_DEPTH} levels`)
+    try { return fn(ind) } finally { level-- }
+  }
   function block(indent) {
     skip()
     if (i >= raw.length) return null
@@ -188,7 +220,8 @@ export function parseYaml(text, { lineOffset = 0 } = {}) {
     return scalarAt(first, indent - 1)
   }
 
-  function map(ind) {
+  const map = nested(mapInner)
+  function mapInner(ind) {
     const out = {}
     for (;;) {
       skip()
@@ -199,8 +232,8 @@ export function parseYaml(text, { lineOffset = 0 } = {}) {
       const body = stripComment(raw[i].slice(cur))
       if (isItem(body)) break
       const m = body.match(KEY_RE)
-      if (!m) throw err(`expected "key: value", got "${body.slice(0, 40)}"`)
-      const key = String(parseScalar(m[1], lineNo()) ?? 'null')
+      if (!m) throw err('expected "key: value" (check the indentation and quoting)')
+      const key = checkKey(String(parseScalar(m[1], lineNo()) ?? 'null'), lineNo())
       if (Object.hasOwn(out, key)) throw err(`duplicate key "${key}"`)
       const rest = raw[i].slice(cur).slice(raw[i].slice(cur).indexOf(':', m[1].length) + 1).replace(/^\s+/, '')
       i++
@@ -224,7 +257,8 @@ export function parseYaml(text, { lineOffset = 0 } = {}) {
     return scalarAt(rest, keyIndent)
   }
 
-  function list(ind) {
+  const list = nested(listInner)
+  function listInner(ind) {
     const out = []
     for (;;) {
       skip()
@@ -262,17 +296,18 @@ export function parseYaml(text, { lineOffset = 0 } = {}) {
     const quoted = text[0] === '"' || text[0] === "'"
     const flow = text[0] === '[' || text[0] === '{'
     if (flow) {
-      let st = flowDepth(text)
-      while ((st.depth > 0 || st.open) && i < raw.length) {
-        text += ' ' + stripComment(raw[i].trim()); i++
-        st = flowDepth(text)
-      }
-      return parseScalar(stripComment(text), startLine)
+      const open = flowScanner()
+      const parts = [text]
+      let more = open(text)
+      while (more && i < raw.length) { const t = stripComment(raw[i].trim()); parts.push(t); more = open(' ' + t); i++ }
+      return parseScalar(stripComment(parts.join(' ')), startLine)
     }
     if (quoted) {
       const q = text[0]
+      const closed = quoteScanner(q)
       let lines = [text]
-      while (!closedQuote(lines.join(' '), q) && i < raw.length) { lines.push(raw[i].trim()); i++ }
+      let done = closed(text)
+      while (!done && i < raw.length) { const t = raw[i].trim(); lines.push(t); done = closed(' ' + t); i++ }
       const joined = foldQuoted(lines)
       return parseScalar(stripComment(joined), startLine)
     }
@@ -331,14 +366,6 @@ export function parseYaml(text, { lineOffset = 0 } = {}) {
   return out
 }
 
-function closedQuote(s, q) {
-  for (let k = 1; k < s.length; k++) {
-    if (q === '"' && s[k] === '\\') { k++; continue }
-    if (s[k] === q) { if (q === "'" && s[k + 1] === "'") { k++; continue } return true }
-  }
-  return false
-}
-
 /** Line folding inside a quoted scalar: line breaks become spaces, empty lines become newlines. */
 function foldQuoted(lines) {
   let out = lines[0]
@@ -358,6 +385,7 @@ export function splitFrontmatter(text) {
   for (let k = 1; k < lines.length; k++) if (/^(---|\.\.\.)\s*$/.test(lines[k])) { end = k; break }
   if (end < 0) return { present: false, unclosed: true, data: null, body: src, bodyLine: 1, error: 'frontmatter opened with --- but never closed', errorLine: 1 }
   const yaml = lines.slice(1, end).join('\n')
+  if (yaml.length > 64 * 1024) return { present: true, data: null, body: lines.slice(end + 1).join('\n'), bodyLine: end + 2, error: 'the frontmatter is over 64 KB', errorLine: 1 }
   const body = lines.slice(end + 1).join('\n')
   try {
     return { present: true, data: parseYaml(yaml, { lineOffset: 1 }), body, bodyLine: end + 2 }

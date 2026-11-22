@@ -16,8 +16,9 @@ export function markdownLines(text) {
   return out
 }
 
-const LINK_RE = /(!?)\[(?:[^\]\\]|\\.)*\]\(\s*<?([^)\s>]+)>?(?:\s+["'(][^)]*["')])?\s*\)/g
-const HTML_SRC_RE = /<(?:img|a|source|video)\b[^>]*?\s(?:src|href)\s*=\s*["']([^"']+)["']/gi
+// bounded repetition everywhere: a hostile README full of "[" or "<img" must not cost quadratic time
+const LINK_RE = /(!?)\[(?:[^\]\\\n]|\\.){0,500}\]\(\s{0,10}<?([^)\s>]{1,2000})>?(?:\s{1,10}["'(][^)]{0,500}["')])?\s{0,10}\)/g
+const HTML_SRC_RE = /<(?:img|a|source|video)\b[^>]{0,1000}?\s(?:src|href)\s{0,5}=\s{0,5}["']([^"']{1,2000})["']/gi
 
 /** Relative link targets outside code: { target, line, image }. URLs, mail links and #anchors are left out. */
 export function relativeLinks(text) {
@@ -75,7 +76,7 @@ const PLACEHOLDER_USERS = new Set(['you', 'your-name', 'yourname', 'your_name', 
 /** Absolute home-folder paths that name a real-looking user: { match, user, index }. */
 export function homePaths(text) {
   const out = []
-  const re = /(?<![\w.~$-])(?:\/home\/|\/Users\/|[A-Za-z]:\\\\?Users\\\\?)([A-Za-z0-9._-]+)(?=[\\/])/g
+  const re = /(?<![\w.~$-])(?:\/home\/|\/Users\/|[A-Za-z]:\\\\?Users\\\\?)([A-Za-z0-9._-]{1,64})(?=[\\/])/g
   for (const m of String(text).matchAll(re)) {
     if (PLACEHOLDER_USERS.has(m[1]) || PLACEHOLDER_USERS.has(m[1].toLowerCase())) continue
     out.push({ match: m[0], user: m[1], index: m.index })

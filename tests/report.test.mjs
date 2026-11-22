@@ -22,8 +22,8 @@ const report = (over = {}) => ({
   ...over,
 })
 
-test('cell escapes pipes, HTML and newlines but leaves code spans readable', () => {
-  assert.equal(cell('a|b <x>\nnext'), 'a\\|b &lt;x&gt;<br>next')
+test('cell escapes pipes, HTML, Markdown and control characters but leaves code spans readable', () => {
+  assert.equal(cell('a|b <x>\nnext'), 'a\\|b &lt;x&gt; next')
   assert.equal(cell('use `a<b|c>` now'), 'use `a<b\\|c>` now')
 })
 
@@ -55,11 +55,11 @@ test('long finding lists are cut with a pointer to the full list', () => {
 test('test output is folded into a details block', () => {
   const md = toMarkdown(report({ checks: [{ id: 'install', title: 'Fresh-clone install test', status: 'fail', note: '', findings: [], details: { test: { command: 'npm test', code: 1, seconds: 2.1, output: 'not ok 1 ```x```' } } }] }))
   assert.match(md, /<details><summary>Test output: <code>npm test<\/code>, exit 1, 2.1 s<\/summary>/)
-  assert.ok(!md.includes('```x```'))
+  assert.match(md, /````text\nnot ok 1 ```x```\n````/) // the fence is longer than any backtick run inside
 })
 
 test('annotations escape newlines, colons and commas', () => {
-  assert.equal(annotation({ rule: 'a/b', level: 'warning', message: 'x\ny 100%', file: 'dir,1/f:2.js', line: 3 }), '::warning file=dir%2C1/f%3A2.js,line=3,title=skill-ci a/b::x%0Ay 100%25')
+  assert.equal(annotation({ rule: 'a/b', level: 'warning', message: 'x\ny 100%', file: 'dir,1/f:2.js', line: 3 }), '::warning file=dir%2C1/f%3A2.js,line=3,title=skill-ci a/b::x y 100%25')
   assert.match(annotation({ rule: 'a/b', level: 'notice', message: 'm' }), /^::notice title=/)
   assert.match(annotation({ rule: 'a/b', level: 'error', message: 'm', file: 'f' }, { prefix: 'sub/' }), /file=sub\/f/)
 })

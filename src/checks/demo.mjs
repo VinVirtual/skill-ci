@@ -1,10 +1,17 @@
-// The demo: run the configured command in the repository and collect the files it writes, for upload as artifacts.
-import { readdirSync, statSync } from 'node:fs'
-import { join, relative, sep } from 'node:path'
+// The demo: run the configured command in the throwaway clone (never in the real checkout), then copy the regular
+// files it wrote into a fresh output folder for upload as workflow artifacts. Symlinks, .git and odd names are refused.
+import { readdirSync, lstatSync, mkdtempSync, copyFileSync, mkdirSync } from 'node:fs'
+import { join, relative, sep, dirname, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 import { finding } from '../lib/context.mjs'
-import { runShell, tail } from '../lib/exec.mjs'
 import { globToRegExp, SKIP_DIRS } from '../lib/files.mjs'
+import { hasControl, cleanLine } from '../lib/sanitize.mjs'
 import { formatMB } from './media.mjs'
+import { prepareClone, runInClone } from './install.mjs'
+
+export const MAX_DEMO_FILES = 200
+const MB = 1024 * 1024
+export const MAX_DEMO_BYTES = 500 * MB
 
 /** The folder part of a glob before its first wildcard ("out/img/*.png" -> "out/img"). */
 export function globBase(glob) {
@@ -15,47 +22,70 @@ export function globBase(glob) {
   return base.join('/')
 }
 
-/** Files under root that match any of the globs: [{ file, abs, bytes, mtimeMs }]. */
-export function collectOutputs(root, globs) {
+const insideGit = (rel) => rel.split('/').includes('.git')
+
+/** Regular files under root that match any glob: [{ file, abs, bytes, mtimeMs }]. Symlinks and .git are never followed. */
+export function collectOutputs(root, globs, { skipped = [] } = {}) {
   const seen = new Map()
+  const consider = (abs, st) => {
+    const rel = relative(root, abs).split(sep).join('/')
+    if (rel.startsWith('..') || insideGit(rel) || seen.has(rel)) return
+    if (!globs.some((g) => globToRegExp(g).test(rel))) return
+    if (hasControl(rel)) { skipped.push(rel); return }
+    seen.set(rel, { file: rel, abs, bytes: st.size, mtimeMs: st.mtimeMs })
+  }
   for (const g of globs) {
-    const re = globToRegExp(g)
     const start = join(root, ...globBase(g).split('/').filter(Boolean))
     const walk = (dir, depth) => {
-      if (depth > 12) return
+      if (depth > 12 || seen.size > MAX_DEMO_FILES * 5) return
       let entries
       try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
       for (const e of entries) {
         const abs = join(dir, e.name)
         if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(abs, depth + 1); continue }
-        if (!e.isFile()) continue
-        const rel = relative(root, abs).split(sep).join('/')
-        if (re.test(rel) && !seen.has(rel)) {
-          const st = statSync(abs)
-          seen.set(rel, { file: rel, abs, bytes: st.size, mtimeMs: st.mtimeMs })
-        }
+        if (e.isFile()) { try { consider(abs, lstatSync(abs)) } catch {} }
       }
     }
-    try { if (statSync(start).isFile()) { const rel = relative(root, start).split(sep).join('/'); if (re.test(rel)) { const st = statSync(start); seen.set(rel, { file: rel, abs: start, bytes: st.size, mtimeMs: st.mtimeMs }) } continue } } catch { continue }
-    walk(start, 0)
+    let st
+    try { st = lstatSync(start) } catch { continue }
+    if (st.isFile()) consider(start, st)
+    else if (st.isDirectory()) walk(start, 0)
   }
   return [...seen.values()].sort((a, b) => a.file.localeCompare(b.file))
 }
 
-export async function checkDemo(ctx, { log = () => {} } = {}) {
+export async function checkDemo(ctx, { tmpBase, log = () => {} } = {}) {
   const { command, outputs, timeout } = ctx.config.demo
   if (!command) return { skipped: true, findings: [], note: 'no demo.command set' }
-  const started = Date.now() - 1000
-  log(`demo: ${command}`)
-  const r = await runShell(command, { cwd: ctx.root, timeoutMs: timeout * 1000, env: { ...process.env, SKILL_CI: '1' } })
-  const details = { command, code: r.code, seconds: +(r.durationMs / 1000).toFixed(1), output: tail(r.output) }
+  const clone = prepareClone(ctx, { tmpBase })
+  if (!clone.dest) return { skipped: true, notRun: true, findings: clone.findings.map((f) => ({ ...f, level: 'notice', rule: f.rule.replace(/^install\//, 'demo/') })), note: clone.note }
+  const started = Date.now() + 1 // the clone was made before this; anything newer was written by the demo
+  log(`demo: ${cleanLine(command)}`)
+  const { r, details, limit } = await runInClone(ctx, command, timeout)
   const findings = []
-  if (r.timedOut) findings.push(finding('demo/timeout', 'error', `The demo \`${command}\` did not finish within ${timeout} s.`))
+  if (r.timedOut) findings.push(finding('demo/timeout', 'error', `The demo \`${command}\` did not finish within ${limit} s.`))
   else if (r.code !== 0) findings.push(finding('demo/failed', 'error', `The demo \`${command}\` failed with exit code ${r.code}.`))
-  const files = collectOutputs(ctx.root, outputs)
+  const skipped = []
+  let files = collectOutputs(clone.dest, outputs, { skipped })
+  for (const s of skipped) findings.push(finding('demo/bad-file-name', 'warning', 'A demo output has a control character in its name and was not uploaded.', { file: s }))
+  if (files.length > MAX_DEMO_FILES) {
+    findings.push(finding('demo/too-many-outputs', 'warning', `The demo wrote ${files.length} matching files; only the first ${MAX_DEMO_FILES} are uploaded.`))
+    files = files.slice(0, MAX_DEMO_FILES)
+  }
+  let total = 0
+  const outDir = mkdtempSync(join(resolve(tmpBase ?? tmpdir()), 'skill-ci-demo-'))
+  const copies = []
+  for (const f of files) {
+    if (total + f.bytes > MAX_DEMO_BYTES) { findings.push(finding('demo/outputs-too-large', 'warning', `Demo outputs over ${MAX_DEMO_BYTES / MB} MB were not uploaded.`)); break }
+    total += f.bytes
+    const dest = join(outDir, ...f.file.split('/'))
+    mkdirSync(dirname(dest), { recursive: true })
+    copyFileSync(f.abs, dest)
+    copies.push(dest)
+  }
   details.files = files.map((f) => ({ file: f.file, size: formatMB(f.bytes), fresh: f.mtimeMs >= started }))
   if (files.length === 0) findings.push(finding('demo/no-outputs', 'error', `The demo wrote no file matching ${outputs.join(', ')}.`))
   else if (!files.some((f) => f.mtimeMs >= started)) findings.push(finding('demo/stale-outputs', 'warning', 'Every demo output is older than this run; the demo did not write them.'))
   for (const f of files) if (f.bytes === 0) findings.push(finding('demo/empty-output', 'warning', 'The demo wrote an empty file.', { file: f.file }))
-  return { findings, details, demoFiles: files.map((f) => f.abs), note: `${files.length} output file(s)` }
+  return { findings, details, demoFiles: copies, demoDir: outDir, note: `${files.length} output file(s)` }
 }

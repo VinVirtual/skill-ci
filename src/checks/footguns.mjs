@@ -3,6 +3,7 @@
 import { posix } from 'node:path'
 import { finding, suppressed } from '../lib/context.mjs'
 import { matchesAny } from '../lib/files.mjs'
+import { chunks } from './secrets.mjs'
 
 const SHELL_EXT = /\.(sh|bash|zsh|ksh)$/i
 const JS_EXT = /\.(js|mjs|cjs|ts|mts|cts|jsx|tsx)$/i
@@ -23,9 +24,9 @@ export function kindOf(file, text = '') {
   return null
 }
 
-const PY_CMD = /\bpython(?:3(?:\.\d+)?)?(?:\.exe)?((?:\s+-[A-Za-z]+)+)\b/g
+const PY_CMD = /\bpython(?:3(?:\.\d+)?)?(?:\.exe)?((?:\s+-[A-Za-z]{1,10}){1,10})\b/g
 // In JS and Python source a shell command lives in a string: python must open the string or follow && ; | $(
-const PY_CMD_IN_CODE = /(?:^|["'`]|&&\s*|;\s*|\|\s*|\$\()[\w./~-]*?\bpython(?:3(?:\.\d+)?)?(?:\.exe)?((?:\s+-[A-Za-z]+)+)\b/g
+const PY_CMD_IN_CODE = /(?:^|["'`]|&&\s*|;\s*|\|\s*|\$\()[\w./~-]{0,100}?\bpython(?:3(?:\.\d+)?)?(?:\.exe)?((?:\s+-[A-Za-z]{1,10}){1,10})\b/g
 const PY_INDICATOR = /python|\bpy3?\b|sys\.executable|\bPY\b/i
 
 /**
@@ -78,7 +79,7 @@ const LINE_RULES = [
   { id: 'python-c-without-I', kinds: ANY, on: 'custom', test: pythonCWithoutIsolation,
     message: '`python -c` without -I: Python puts the current folder first on its import path, so a planted json.py (or any module name) in that folder runs instead.',
     hint: 'Use `python -I -c ...` (isolated mode).' },
-  { id: 'curl-pipe-shell', kinds: ANY, on: 'raw', test: (l) => /\b(?:curl|wget)\b[^\n|;]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:ba|z|da|k)?sh\b/.test(l) || /\b(?:curl|wget)\b[^\n|;]*\|\s*(?:sudo\s+)?python[\d.]*\b/.test(l),
+  { id: 'curl-pipe-shell', kinds: ANY, on: 'raw', test: (l) => /\b(?:curl|wget)\b[^\n|;]{0,300}\|\s*(?:sudo\s+(?:-\S{1,20}\s+){0,5})?(?:ba|z|da|k)?sh\b/.test(l) || /\b(?:curl|wget)\b[^\n|;]{0,300}\|\s*(?:sudo\s+)?python[\d.]*\b/.test(l),
     message: 'Downloads a script and pipes it straight into a shell; nothing checks what was downloaded.', hint: 'Download to a file, verify a checksum or signature, then run it.' },
   { id: 'shell-true', kinds: ['js'], on: 'code', test: (l) => /\bshell\s*:\s*true\b/.test(l),
     message: '`shell: true` runs the command through a shell, so spaces, quotes, $() and ; in any argument are interpreted.', hint: 'Pass the program and an argument list with shell off.' },
@@ -92,14 +93,14 @@ const LINE_RULES = [
     message: '`eval`/`exec` runs a string as Python code.' },
   { id: 'eval', kinds: ['shell'], on: 'raw', test: (l) => /(?:^|[;&|]\s*|\bthen\s+|\bdo\s+)eval\s+["']?\$/.test(l),
     message: '`eval` of a variable runs whatever the variable holds as shell code.' },
-  { id: 'rm-rf-variable', kinds: ['shell', 'md', 'workflow'], on: 'raw', test: (l) => /\brm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*\s+)+["']?\$\{?[A-Za-z_]\w*\}?["']?\/(?![^\s"']*:\?)/.test(l) && !/\$\{[A-Za-z_]\w*:\?/.test(l),
+  { id: 'rm-rf-variable', kinds: ['shell', 'md', 'workflow'], on: 'raw', test: (l) => /\brm\s+(?:-[a-zA-Z]{0,10}[rR][a-zA-Z]{0,10}\s+){1,5}["']?\$\{?[A-Za-z_]\w*\}?["']?\/(?![^\s"']{0,300}:\?)/.test(l) && !/\$\{[A-Za-z_]\w*:\?/.test(l),
     message: '`rm -r` on "$VAR/..." deletes from / when the variable is empty.', hint: 'Use "${VAR:?}/..." so an empty variable stops the script.' },
-  { id: 'chmod-777', kinds: ANY, on: 'raw', test: (l) => /\bchmod\s+(?:-R\s+)?0?777\b|chmod(?:Sync)?\([^)]*0o?777\)/.test(l),
+  { id: 'chmod-777', kinds: ANY, on: 'raw', test: (l) => /\bchmod\s+(?:-R\s+)?0?777\b|chmod(?:Sync)?\([^)]{0,300}0o?777\)/.test(l),
     message: 'Mode 777 lets every user on the machine change the file.' },
   { id: 'tls-verify-off', kinds: ['py'], on: 'code', test: (l) => /\bverify\s*=\s*False\b/.test(l), message: 'TLS certificate checking is turned off (verify=False).' },
   { id: 'tls-verify-off', kinds: ['js'], on: 'code', test: (l) => /rejectUnauthorized\s*:\s*false|NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*["']{0,2}\s*0/.test(l), message: 'TLS certificate checking is turned off.' },
-  { id: 'tls-verify-off', kinds: ['shell', 'md', 'workflow'], on: 'raw', test: (l) => /\bcurl\b[^\n|]*\s(?:-k|--insecure)\b|\bwget\b[^\n|]*--no-check-certificate/.test(l), message: 'TLS certificate checking is turned off (curl -k / --insecure).' },
-  { id: 'unsafe-yaml-load', kinds: ['py'], on: 'code', test: (l) => /\byaml\.(?:load|load_all)\s*\((?![^)]*Loader\s*=\s*(?:yaml\.)?(?:Safe|CSafe)Loader)/.test(l),
+  { id: 'tls-verify-off', kinds: ['shell', 'md', 'workflow'], on: 'raw', test: (l) => /\bcurl\b[^\n|]{0,300}\s(?:-k|--insecure)\b|\bwget\b[^\n|]{0,300}--no-check-certificate/.test(l), message: 'TLS certificate checking is turned off (curl -k / --insecure).' },
+  { id: 'unsafe-yaml-load', kinds: ['py'], on: 'code', test: (l) => /\byaml\.(?:load|load_all)\s*\((?![^)]{0,300}Loader\s*=\s*(?:yaml\.)?(?:Safe|CSafe)Loader)/.test(l),
     message: '`yaml.load` without SafeLoader can build arbitrary Python objects from the file.', hint: 'Use yaml.safe_load.' },
   { id: 'pickle-load', kinds: ['py'], on: 'code', level: 'notice', test: (l) => /\bpickle\.loads?\s*\(/.test(l), message: '`pickle.load` runs code embedded in the file; only load pickles you made.' },
 ]
@@ -137,7 +138,7 @@ export function execCalls(code, bindings, raw = code) {
   return hits
 }
 
-const UNTRUSTED_CONTEXT = /\$\{\{\s*github\.(?:event\.(?:issue|pull_request|comment|review|review_comment|discussion|head_commit|commits|pages|workflow_run)\b[\w.[\]*]*(?:title|body|name|message|label|ref|email|default_branch)|head_ref)\b/
+const UNTRUSTED_CONTEXT = /\$\{\{\s*github\.(?:event\.(?:issue|pull_request|comment|review|review_comment|discussion|head_commit|commits|pages|workflow_run)\b[\w.[\]*]{0,100}(?:title|body|name|message|label|ref|email|default_branch)|head_ref)\b/
 
 /** Workflow and action files: unpinned actions, pull_request_target, missing permissions, untrusted input in run:. */
 export function lintWorkflow(text, file) {
@@ -148,7 +149,6 @@ export function lintWorkflow(text, file) {
   const isWorkflow = WORKFLOW_RE.test(file)
   for (const [k, line] of lines.entries()) {
     const n = k + 1
-    if (suppressed(line, '')) continue
     const uses = line.match(/^\s*-?\s*uses:\s*["']?([^\s"'#]+)/)
     if (uses && !uses[1].startsWith('./') && !uses[1].startsWith('docker://')) {
       const ref = uses[1].split('@')[1]
@@ -173,20 +173,24 @@ export function lintWorkflow(text, file) {
 }
 
 /** Lints one file's text. -> findings */
-export function lintFile(text, file, { disabled = () => false } = {}) {
+export function lintFile(text, file, { disabled = () => false, allowInline = true } = {}) {
   const kind = kindOf(file, text)
   if (!kind) return []
   const out = []
   const lines = text.split(/\r?\n/)
   const bindings = kind === 'js' ? childProcessBindings(text) : null
+  const seen = new Set()
   const push = (rule, level, message, n, hint) => {
-    if (disabled(rule) || suppressed(lines[n - 1] ?? '', rule)) return
+    if (disabled(rule) || suppressed(lines[n - 1] ?? '', rule, allowInline)) return
+    if (seen.has(`${rule}\0${n}`)) return
+    seen.add(`${rule}\0${n}`)
     out.push(finding(rule, level, message, { file, line: n, hint }))
   }
   let fence = null
-  for (const [k, line] of lines.entries()) {
-    if (line.length > 5000) continue
+  for (const [k, fullLine] of lines.entries()) {
     const n = k + 1
+    // long lines are checked in overlapping pieces, never skipped (a minified line can still hide curl | sh)
+    for (const { text: line } of chunks(fullLine)) {
     let raw = line, code = line
     if (kind === 'md') {
       const f = line.match(/^\s{0,3}(`{3,}|~{3,})/)
@@ -205,23 +209,26 @@ export function lintFile(text, file, { disabled = () => false } = {}) {
       for (const call of execCalls(code, bindings, line)) {
         push('footguns/exec-string', 'warning', `\`${call.name}()\` runs its command string through a shell${call.interpolated ? ', and this one builds the string from variables (command injection if any of them comes from input)' : ''}.`, n, 'Use execFile/spawn with an argument list instead.')
       }
-    }
+    }  }
   }
-  if (kind === 'workflow') for (const f of lintWorkflow(text, file)) if (!disabled(f.rule) && !suppressed(lines[f.line - 1] ?? '', f.rule)) out.push(f)
+  if (kind === 'workflow') for (const f of lintWorkflow(text, file)) if (!disabled(f.rule) && !suppressed(lines[f.line - 1] ?? '', f.rule, allowInline)) out.push(f)
   return out
 }
 
-export function checkFootguns(ctx) {
+export function checkFootguns(ctx, { budgetMs = 60000 } = {}) {
   const findings = []
-  let checked = 0
+  let checked = 0, left = 0
+  const deadline = Date.now() + budgetMs
   for (const file of ctx.files) {
     if (matchesAny(file, ctx.config.footguns.ignore)) continue
+    if (Date.now() > deadline) { left++; continue }
     if (!kindOf(file) && posix.extname(file) !== '' ) continue
     const text = ctx.read(file)
     if (text === null) continue
     if (!kindOf(file, text)) continue
     checked++
-    findings.push(...lintFile(text, file, { disabled: ctx.disabled }))
+    findings.push(...lintFile(text, file, { disabled: ctx.disabled, allowInline: ctx.allowInline }))
   }
+  if (left) findings.push(finding('footguns/not-checked', 'warning', `The script check ran out of its ${Math.round(budgetMs / 1000)} s budget; ${left} file(s) were not checked.`))
   return { findings, note: `${checked} files checked` }
 }

@@ -32,7 +32,7 @@ test('personal emails are errors and masked; noreply and example addresses are f
   const out = scanText(`Contact ${FAKE.email}\nCommits: 123+x@users.noreply.github.com\nTest: a@example.com, noreply@company.io, git@github.com:o/r.git\n`, 'README.md')
   assert.deepEqual(rules(out), ['secrets/email'])
   assert.ok(!out[0].message.includes(FAKE.email))
-  assert.match(out[0].message, /j\*\*\*@mailbox-co\.net/)
+  assert.match(out[0].message, /at mailbox-co\.net/)
 })
 
 test('things that only look like emails are not flagged', () => {
@@ -90,7 +90,7 @@ test('binary files are skipped; .env.example is not a sensitive file', () => {
   assert.deepEqual(checkSecrets(ctxFor(dir)).findings, [])
 })
 
-test('mask keeps four characters and the length', () => {
-  assert.equal(mask('abcdefghij'), 'abcd**** (10 chars)')
-  assert.equal(mask('abc'), '***')
+test('mask shows no character of the value, only its length', () => {
+  assert.equal(mask('abcdefghij'), '[hidden, 10 chars]')
+  assert.ok(!mask('ghp_secretvalue').includes('ghp'))
 })

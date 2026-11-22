@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { finding } from '../lib/context.mjs'
 import { runShell, tail } from '../lib/exec.mjs'
+import { cleanLine } from '../lib/sanitize.mjs'
+import { redactText } from './secrets.mjs'
 
 const NPM_DEFAULT_TEST = /no test specified/
 
@@ -67,17 +69,42 @@ function hasPythonTests(dir) {
 
 const git = (cwd, args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 
-/** Clones root (its committed HEAD) into a new temp folder named after the repo. -> path */
+/** Clones root (its committed HEAD) into a new temp folder named after the repo, with no remote left behind. */
 export function freshClone(root, name, base = tmpdir()) {
   const parent = mkdtempSync(join(resolve(base), 'skill-ci-clone-'))
   const dest = join(parent, name)
   try {
-    git(parent, ['clone', '--quiet', '--no-hardlinks', '--', root, dest])
+    git(parent, ['clone', '--quiet', '--no-hardlinks', '--no-recurse-submodules', '--', root, dest])
+    // the origin would point back at the real checkout (and its credentials); repository code gets no map to it
+    git(dest, ['remote', 'remove', 'origin'])
   } catch (e) {
     rmSync(parent, { recursive: true, force: true })
-    throw new Error(`git clone failed: ${String(e.stderr || e.message).trim().split('\n').pop()}`)
+    throw new Error(`git clone failed: ${cleanLine(String(e.stderr || e.message).trim().split('\n').pop()).slice(0, 200)}`)
   }
   return { parent, dest }
+}
+
+/** The one throwaway clone shared by the install test and the demo. -> { dest } or { error, findings, note, skipped } */
+export function prepareClone(ctx, { tmpBase } = {}) {
+  if (ctx.clone) return ctx.clone
+  if (!ctx.isGitRoot) {
+    const sub = ctx.isGit
+    ctx.clone = { skipped: true, notRun: true, findings: [finding(sub ? 'install/subfolder' : 'install/not-git', 'warning', sub ? 'A subfolder of a git repository: the fresh-clone test and demo were not run.' : 'Not a git repository, so a fresh clone cannot be tested.')], note: sub ? 'subfolder; not run' : 'not a git repo; not run' }
+    return ctx.clone
+  }
+  try { git(ctx.root, ['rev-parse', '--verify', 'HEAD']) } catch {
+    ctx.clone = { notRun: true, findings: [finding('install/no-commits', 'error', 'The repository has no commits yet; a clone would be empty.')], note: 'no commits' }
+    return ctx.clone
+  }
+  try { ctx.clone = freshClone(ctx.root, ctx.repoName, tmpBase) } catch (e) {
+    ctx.clone = { notRun: true, findings: [finding('install/clone-failed', 'error', e.message)], note: 'clone failed' }
+  }
+  return ctx.clone
+}
+
+/** Removes the shared clone (unless keep). */
+export function cleanupClone(ctx, { keep = false } = {}) {
+  if (ctx.clone?.parent && !keep) rmSync(ctx.clone.parent, { recursive: true, force: true })
 }
 
 function describeRun(label, command, r, seconds) {
@@ -85,46 +112,44 @@ function describeRun(label, command, r, seconds) {
   return `${label} \`${command}\` failed with exit code ${r.code}${r.signal ? ` (${r.signal})` : ''}.`
 }
 
-export async function checkInstall(ctx, { keep = false, tmpBase, log = () => {} } = {}) {
+/** Runs a repository command in the clone within the run's time budget. */
+export async function runInClone(ctx, command, seconds) {
+  const timeoutMs = Math.max(100, Math.min(seconds * 1000, ctx.remainingMs ? ctx.remainingMs() : Infinity))
+  const r = await runShell(command, { cwd: ctx.clone.dest, timeoutMs, env: process.env })
+  return { r, details: { command, code: r.code, seconds: +(r.durationMs / 1000).toFixed(1), output: redactText(tail(r.output)) }, limit: +(timeoutMs / 1000).toFixed(1) }
+}
+
+export async function checkInstall(ctx, { tmpBase, log = () => {} } = {}) {
   const findings = []
   const details = {}
-  if (!ctx.isGit) return { skipped: true, findings: [finding('install/not-git', 'warning', 'Not a git repository, so a fresh clone cannot be tested.')], note: 'not a git repo' }
-  try { git(ctx.root, ['rev-parse', '--verify', 'HEAD']) } catch { return { findings: [finding('install/no-commits', 'error', 'The repository has no commits yet; a clone would be empty.')], note: 'no commits' } }
+  const clone = prepareClone(ctx, { tmpBase })
+  if (!clone.dest) return { skipped: clone.skipped, notRun: true, findings: [...clone.findings], note: clone.note }
   let dirty = ''
   try { dirty = git(ctx.root, ['status', '--porcelain', '--untracked-files=no']).trim() } catch {}
   if (dirty) findings.push(finding('install/uncommitted', 'notice', `${dirty.split('\n').length} changed file(s) are not committed, so the clone tests the last commit without them.`))
-
-  let clone
-  try { clone = freshClone(ctx.root, ctx.repoName, tmpBase) } catch (e) { return { findings: [...findings, finding('install/clone-failed', 'error', e.message)], note: 'clone failed' } }
-  details.clone = keep ? clone.dest : '(removed)'
-  try {
-    const cfg = ctx.config.test
-    const inferred = inferCommands(clone.dest)
-    if (inferred.error) { findings.push(finding('install/bad-package-json', 'error', inferred.error, { file: 'package.json' })); return { findings, details, note: 'bad package.json' } }
-    const install = cfg.install ?? inferred.install
-    const test = cfg.command ?? inferred.test
-    details.source = cfg.command ? '.skill-ci.yml test.command' : inferred.source
-    if (!test) {
-      findings.push(finding('install/no-test-command', 'warning', 'No test command found, so the fresh clone was not tested.', { hint: 'Set test.command in .skill-ci.yml, or add a "test" script to package.json.' }))
-      return { findings, details, note: 'cloned; no test command' }
-    }
-    const timeoutMs = cfg.timeout * 1000
-    const env = { ...process.env, SKILL_CI: '1' }
-    if (install) {
-      log(`install: ${install}`)
-      const r = await runShell(install, { cwd: clone.dest, timeoutMs, env })
-      details.install = { command: install, code: r.code, seconds: +(r.durationMs / 1000).toFixed(1), output: tail(r.output) }
-      if (r.code !== 0 || r.timedOut) {
-        findings.push(finding('install/install-failed', 'error', describeRun('Install', install, r, cfg.timeout)))
-        return { findings, details, note: 'install failed' }
-      }
-    }
-    log(`test: ${test}`)
-    const r = await runShell(test, { cwd: clone.dest, timeoutMs, env })
-    details.test = { command: test, code: r.code, seconds: +(r.durationMs / 1000).toFixed(1), output: tail(r.output) }
-    if (r.code !== 0 || r.timedOut) findings.push(finding('install/test-failed', 'error', describeRun('In a fresh clone, the test command', test, r, cfg.timeout), { hint: 'Run it in a fresh clone yourself: a file that is ignored or never committed is the usual cause.' }))
-    return { findings, details, note: `\`${test}\` ${r.code === 0 && !r.timedOut ? 'passed' : 'failed'} in ${details.test.seconds} s` }
-  } finally {
-    if (!keep) rmSync(clone.parent, { recursive: true, force: true })
+  details.clone = clone.dest
+  const cfg = ctx.config.test
+  const inferred = inferCommands(clone.dest)
+  if (inferred.error) { findings.push(finding('install/bad-package-json', 'error', inferred.error, { file: 'package.json' })); return { findings, details, note: 'bad package.json', notRun: true } }
+  const install = cfg.install ?? inferred.install
+  const test = cfg.command ?? inferred.test
+  details.source = cfg.command ? '.skill-ci.yml test.command' : inferred.source
+  if (!test) {
+    findings.push(finding('install/no-test-command', 'warning', 'No test command found, so the fresh clone was not tested.', { hint: 'Set test.command in .skill-ci.yml, or add a "test" script to package.json.' }))
+    return { findings, details, note: 'cloned; no test command', notRun: true }
   }
+  if (install) {
+    log(`install: ${cleanLine(install)}`)
+    const { r, details: d, limit } = await runInClone(ctx, install, cfg.timeout)
+    details.install = d
+    if (r.code !== 0 || r.timedOut) {
+      findings.push(finding('install/install-failed', 'error', describeRun('Install', install, r, limit)))
+      return { findings, details, note: 'install failed' }
+    }
+  }
+  log(`test: ${cleanLine(test)}`)
+  const { r, details: d, limit } = await runInClone(ctx, test, cfg.timeout)
+  details.test = d
+  if (r.code !== 0 || r.timedOut) findings.push(finding('install/test-failed', 'error', describeRun('In a fresh clone, the test command', test, r, limit), { hint: 'Run it in a fresh clone yourself: a file that is ignored or never committed is the usual cause.' }))
+  return { findings, details, note: `\`${test}\` ${r.code === 0 && !r.timedOut ? 'passed' : 'failed'} in ${d.seconds} s` }
 }

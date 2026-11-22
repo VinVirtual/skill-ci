@@ -12,8 +12,8 @@ export function inline(text) {
     let s = p.replace(/\\\|/g, '|')
     s = s.replace(/<[^>]*>|&(?![a-z]+;|#\d+;)|>/gi, (m) => (ALLOWED_TAGS.test(m) ? m : esc(m)))
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, href) => (/^(https?:|#|\.{0,2}\/)/.test(href) ? `<a href="${esc(href)}">${label}</a>` : label))
-    return s
+    s = s.replace(/(?<!\\)\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, href) => (/^(https?:|#)/.test(href) ? `<a href="${esc(href)}">${label}</a>` : label))
+    return s.replace(/\\([\\`*_[\]()!#~|])/g, '$1') // backslash escapes from escapeMd
   }).join('')
     // a link whose label is a code span was split apart above; join it back
     .replace(/\[(<code>[^<]*<\/code>)\]\(([^)\s]+)\)/g, (_, label, href) => (/^(https?:|#)/.test(href) ? `<a href="${esc(href)}">${label}</a>` : label))
@@ -28,9 +28,10 @@ export function markdownToHtml(md) {
   const out = []
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
-    if (/^```/.test(line)) {
+    const fence = line.match(/^(`{3,})/)
+    if (fence) {
       const body = []
-      for (i++; i < lines.length && !/^```/.test(lines[i]); i++) body.push(lines[i])
+      for (i++; i < lines.length && lines[i] !== fence[1]; i++) body.push(lines[i])
       out.push(`<pre><code>${esc(body.join('\n'))}</code></pre>`)
       continue
     }
@@ -52,6 +53,12 @@ export function markdownToHtml(md) {
     }
     if (/^<\/?details>|^<details>/.test(line) || /^<\/details>$/.test(line)) { out.push(line.startsWith('<details>') ? `<details>${inline(line.slice(9))}` : '</details>'); continue }
     if (line.trim() === '') continue
+    if (line.startsWith('> ')) {
+      const quote = [line.slice(2)]
+      while (i + 1 < lines.length && lines[i + 1].startsWith('> ')) quote.push(lines[++i].slice(2))
+      out.push(`<blockquote>${inline(quote.join(' ').replace(/^\[!(NOTE|WARNING|TIP)\]\s*/, ''))}</blockquote>`)
+      continue
+    }
     const para = [line]
     while (i + 1 < lines.length && lines[i + 1].trim() !== '' && !/^(#|\||```|<details>|<\/details>)/.test(lines[i + 1])) para.push(lines[++i])
     out.push(`<p>${inline(para.join(' '))}</p>`)
@@ -87,6 +94,7 @@ a { color: var(--note); text-decoration: none; } a:hover { text-decoration: unde
 .pill.pass { color:var(--pass); background:var(--pass-bg); } .pill.warn, .pill.warning { color:var(--warn); background:var(--warn-bg); }
 .pill.fail, .pill.error { color:var(--fail); background:var(--fail-bg); } .pill.skip { color:var(--skip); background:var(--skip-bg); }
 .pill.notice { color:var(--note); background:var(--note-bg); }
+blockquote { margin: 0 0 16px; padding: 8px 14px; border-left: 3px solid var(--note); background: var(--note-bg); border-radius: 0 6px 6px 0; }
 details { margin: 0 0 16px; } summary { cursor: pointer; color: var(--muted); }
 @media (max-width: 640px) { main { margin: 0; border-radius: 0; border-width: 0; padding: 8px 16px 16px; } .frame { margin: 0 -16px 8px; padding: 10px 16px; } }
 `

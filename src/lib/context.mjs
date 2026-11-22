@@ -2,13 +2,17 @@
 import { basename, join, posix } from 'node:path'
 import { realpathSync } from 'node:fs'
 import { listFiles, dirsOf, matchesAny, readText } from './files.mjs'
+import { cleanLine } from './sanitize.mjs'
 
 export const LEVELS = ['error', 'warning', 'notice']
 
 /** A finding. rule is "check/rule-id"; file is posix-relative; line is 1-based. */
 export function finding(rule, level, message, extra = {}) {
   if (!LEVELS.includes(level)) throw new Error(`bad level ${level}`)
-  return { rule, level, message, ...extra }
+  const out = { rule, level, message: cleanLine(message).slice(0, 1000), ...extra }
+  if (out.hint !== undefined) out.hint = cleanLine(out.hint).slice(0, 500)
+  if (out.file !== undefined) out.file = cleanLine(out.file).slice(0, 400)
+  return out
 }
 
 /** Works out the repository name: config, then $GITHUB_REPOSITORY when it is this checkout, then the folder name. */
@@ -24,7 +28,7 @@ export function repoNameFor(root, config, env = process.env) {
   return basename(real)
 }
 
-export function buildContext(root, config, { env = process.env, listing } = {}) {
+export function buildContext(root, config, { env = process.env, listing, deadline = Infinity, allowInline = true } = {}) {
   const list = listing ?? listFiles(root)
   const ignored = (rel) => matchesAny(rel, config.ignore)
   const files = list.files.filter((f) => !ignored(f))
@@ -36,6 +40,10 @@ export function buildContext(root, config, { env = process.env, listing } = {}) 
     config,
     env,
     isGit: list.git,
+    isGitRoot: Boolean(list.gitRoot),
+    symlinks: (list.symlinks ?? []).filter((f) => !ignored(f)),
+    allowInline,
+    remainingMs: () => deadline - Date.now(),
     repoName: repoNameFor(root, config, env),
     files,
     tracked: list.tracked,
@@ -66,11 +74,9 @@ export function statusOf(findings) {
   return 'pass'
 }
 
-/** Masks a secret for display: the first 4 characters, then its length. */
+/** Describes a secret for display without any of its characters: only its length. */
 export function mask(value) {
-  const v = String(value)
-  if (v.length <= 6) return '*'.repeat(v.length)
-  return `${v.slice(0, 4)}${'*'.repeat(4)} (${v.length} chars)`
+  return `[hidden, ${String(value).length} chars]`
 }
 
 /** Line number (1-based) of a character offset. */
@@ -81,8 +87,9 @@ export function lineAt(text, offset) {
 }
 
 /** Inline suppression comment: "skill-ci: allow" (optionally followed by rule ids). */
-export function suppressed(lineText, rule) {
-  const m = lineText.match(/skill-ci:\s*allow\b([^\n]*)/i)
+export function suppressed(lineText, rule, allowInline = true) {
+  if (!allowInline) return false
+  const m = lineText.slice(0, 4000).match(/skill-ci:\s*allow\b([^\n]*)/i)
   if (!m) return false
   const ids = m[1].match(/[a-z0-9-]+\/[a-z0-9-]+/g)
   return !ids || ids.includes(rule)

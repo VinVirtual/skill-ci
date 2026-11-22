@@ -1,17 +1,25 @@
 // The repository's file list (what git would publish), glob matching and safe text reading.
+// Symlinks are never followed: a link to /etc/passwd or ~/.ssh must not be read, sized or uploaded.
 import { execFileSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync } from 'node:fs'
+import { readdirSync, readFileSync, lstatSync, openSync, readSync, closeSync, constants } from 'node:fs'
 import { join, relative, sep, posix } from 'node:path'
 
 /** Folders never walked when the repo is not a git checkout. */
 export const SKIP_DIRS = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', '.scratch', '.pytest_cache', '.mypy_cache', '.tox', '.next', '.cache'])
 
+export const MAX_GLOB_LENGTH = 300
+export const MAX_GLOB_WILDCARDS = 12
 const globCache = new Map()
 
-/** Converts a glob to a RegExp. Supports **, *, ?, {a,b} and [abc]. A pattern without / matches at any depth. */
+export class GlobError extends Error {}
+
+/** Converts a glob to a RegExp. Supports **, *, ?, {a,b} and [abc]. A pattern without / matches at any depth.
+ *  Runs of * collapse, and long or wildcard-heavy patterns are refused, so matching cannot backtrack badly. */
 export function globToRegExp(glob) {
   if (globCache.has(glob)) return globCache.get(glob)
-  let g = glob.replace(/\\/g, '/').replace(/^\.\//, '')
+  if (glob.length > MAX_GLOB_LENGTH) throw new GlobError(`glob longer than ${MAX_GLOB_LENGTH} characters`)
+  let g = glob.replace(/\\/g, '/').replace(/^\.\//, '').replace(/(\*\*\/)+/g, '**/').replace(/\*{3,}/g, '**')
+  if ((g.match(/[*?]/g) || []).length > MAX_GLOB_WILDCARDS) throw new GlobError(`glob "${g.slice(0, 40)}" has more than ${MAX_GLOB_WILDCARDS} wildcards`)
   if (g.endsWith('/')) g += '**'
   const anyDepth = !g.includes('/')
   let re = ''
@@ -21,15 +29,15 @@ export function globToRegExp(glob) {
       if (g[i + 1] === '*') {
         const atStart = i === 0 || g[i - 1] === '/'
         const atEnd = i + 2 === g.length || g[i + 2] === '/'
-        if (atStart && atEnd) { re += g[i + 2] === '/' ? '(?:.*/)?' : '.*'; i += g[i + 2] === '/' ? 2 : 1; continue }
-        re += '.*'; i++; continue
+        if (atStart && atEnd) { re += g[i + 2] === '/' ? '(?:[^/]*/)*' : '.*'; i += g[i + 2] === '/' ? 2 : 1; continue }
+        re += '[^/]*'; i++; continue
       }
       re += '[^/]*'
     } else if (c === '?') re += '[^/]'
     else if (c === '{') {
       const end = g.indexOf('}', i)
       if (end < 0) { re += '\\{'; continue }
-      re += '(?:' + g.slice(i + 1, end).split(',').map((p) => p.replace(/[.+^$()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*')).join('|') + ')'
+      re += '(?:' + g.slice(i + 1, end).split(',').map((p) => p.replace(/[.+^$()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')).join('|') + ')'
       i = end
     } else if (c === '[') {
       const end = g.indexOf(']', i)
@@ -38,7 +46,8 @@ export function globToRegExp(glob) {
       i = end
     } else re += c.replace(/[.+^$()|\\]/g, '\\$&')
   }
-  const out = new RegExp('^' + (anyDepth ? '(?:.*/)?' : '') + re + '$')
+  re = re.replace(/(\[\^\/\]\*)+/g, '[^/]*')
+  const out = new RegExp('^' + (anyDepth ? '(?:[^/]*/)*' : '') + re + '$')
   globCache.set(glob, out)
   return out
 }
@@ -48,42 +57,63 @@ export function matchesAny(path, globs = []) {
   return globs.some((g) => globToRegExp(g).test(path))
 }
 
-const git = (cwd, args) => execFileSync('git', ['-c', 'core.quotepath=off', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 })
+const git = (cwd, args) => execFileSync('git', ['-c', 'core.quotepath=off', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 })
+
+/** Where dir sits in git: { inside, root } (root: dir is the top of the work tree). */
+export function gitStatus(dir) {
+  try {
+    if (git(dir, ['rev-parse', '--is-inside-work-tree']).trim() !== 'true') return { inside: false, root: false }
+    const prefix = git(dir, ['rev-parse', '--show-prefix']).trim()
+    return { inside: true, root: prefix === '' }
+  } catch { return { inside: false, root: false } }
+}
 
 /** True when dir is the top of a git work tree (not just inside one). */
-export function isGitRoot(dir) {
-  if (!existsSync(join(dir, '.git'))) return false
-  try { return git(dir, ['rev-parse', '--is-inside-work-tree']).trim() === 'true' } catch { return false }
-}
+export const isGitRoot = (dir) => gitStatus(dir).root
+
+/** lstat without throwing. */
+export const lstat = (abs) => { try { return lstatSync(abs) } catch { return null } }
 
 /**
  * Lists the repository's files as posix paths relative to root.
- * In a git checkout: tracked files plus untracked files that are not ignored (what the next commit would hold).
- * `tracked` is the subset git already has. Elsewhere: a walk that skips SKIP_DIRS.
+ * Inside git (also for a subfolder): tracked files plus untracked files that are not ignored, from git itself,
+ * so tracked files in .cache or venv folders are not missed. `tracked` is the subset git already has.
+ * `symlinks` lists links, which are never read. Elsewhere: a walk that skips SKIP_DIRS.
  */
 export function listFiles(root) {
-  if (isGitRoot(root)) {
+  const status = gitStatus(root)
+  if (status.inside) {
     try {
       const split = (s) => s.split('\0').filter(Boolean)
-      const tracked = split(git(root, ['ls-files', '-z', '--cached']))
-      const untracked = split(git(root, ['ls-files', '-z', '--others', '--exclude-standard']))
-      const present = (p) => { try { return statSync(join(root, p)).isFile() } catch { return false } }
-      const trackedSet = new Set(tracked.filter(present))
-      return { git: true, files: [...new Set([...trackedSet, ...untracked.filter(present)])].sort(), tracked: trackedSet }
+      const tracked = split(git(root, ['ls-files', '-z', '--cached', '--', '.']))
+      const untracked = split(git(root, ['ls-files', '-z', '--others', '--exclude-standard', '--', '.']))
+      const symlinks = new Set()
+      const keep = (p) => {
+        const st = lstat(join(root, p))
+        if (!st) return false
+        if (st.isSymbolicLink()) { symlinks.add(p); return false }
+        return st.isFile()
+      }
+      const trackedSet = new Set(tracked.filter(keep))
+      const files = [...new Set([...trackedSet, ...untracked.filter(keep)])].sort()
+      return { git: true, gitRoot: status.root, files, tracked: trackedSet, symlinks: [...symlinks].sort() }
     } catch { /* fall back to a walk */ }
   }
-  const files = []
-  const walk = (dir) => {
+  const files = [], symlinks = []
+  const walk = (dir, depth) => {
+    if (depth > 64) return
     let entries
     try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
     for (const e of entries) {
-      if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(join(dir, e.name)) }
-      else if (e.isFile()) files.push(relative(root, join(dir, e.name)).split(sep).join('/'))
+      const rel = () => relative(root, join(dir, e.name)).split(sep).join('/')
+      if (e.isSymbolicLink()) symlinks.push(rel())
+      else if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(join(dir, e.name), depth + 1) }
+      else if (e.isFile()) files.push(rel())
     }
   }
-  walk(root)
+  walk(root, 0)
   files.sort()
-  return { git: false, files, tracked: new Set(files) }
+  return { git: false, gitRoot: false, files, tracked: new Set(files), symlinks: symlinks.sort() }
 }
 
 /** The set of folders that hold at least one listed file (posix, relative). */
@@ -96,26 +126,51 @@ export function dirsOf(files) {
   return dirs
 }
 
-/** True when the first 8 KB contain a NUL byte. */
-export function looksBinary(abs) {
+/** Reads up to n bytes from the start of a regular file (never through a symlink). */
+function head(abs, n) {
   let fd
   try {
-    fd = openSync(abs, 'r')
-    const buf = Buffer.alloc(8192)
-    const n = readSync(fd, buf, 0, buf.length, 0)
-    return buf.subarray(0, n).includes(0)
-  } catch { return true } finally { if (fd !== undefined) closeSync(fd) }
+    fd = openSync(abs, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+    const buf = Buffer.alloc(n)
+    return buf.subarray(0, readSync(fd, buf, 0, n, 0))
+  } catch { return null } finally { if (fd !== undefined) closeSync(fd) }
 }
 
-export const MAX_TEXT_BYTES = 2 * 1024 * 1024
+/** True when the first 8 KB contain a NUL byte (and no UTF-16 byte-order mark). */
+export function looksBinary(abs) {
+  const buf = head(abs, 8192)
+  if (!buf) return true
+  if (utf16Order(buf)) return false
+  return buf.includes(0)
+}
 
-/** Reads a file as text. Returns { text } or { skipped: 'binary' | 'too-large' | 'unreadable' }. */
+const utf16Order = (buf) => (buf[0] === 0xff && buf[1] === 0xfe ? 'le' : buf[0] === 0xfe && buf[1] === 0xff ? 'be' : null)
+
+export const MAX_TEXT_BYTES = 20 * 1024 * 1024
+
+/** Reads a file as text (UTF-8, or UTF-16 with a byte-order mark).
+ *  Returns { text } or { skipped: 'binary' | 'too-large' | 'unreadable' | 'symlink' }. */
 export function readText(abs) {
-  let size
-  try { size = statSync(abs).size } catch { return { skipped: 'unreadable' } }
-  if (size > MAX_TEXT_BYTES) return { skipped: 'too-large', size }
-  if (looksBinary(abs)) return { skipped: 'binary', size }
-  try { return { text: readFileSync(abs, 'utf8'), size } } catch { return { skipped: 'unreadable' } }
+  const st = lstat(abs)
+  if (!st) return { skipped: 'unreadable' }
+  if (st.isSymbolicLink()) return { skipped: 'symlink' }
+  if (!st.isFile()) return { skipped: 'unreadable' }
+  if (st.size > MAX_TEXT_BYTES) return { skipped: 'too-large', size: st.size }
+  let buf
+  try {
+    const fd = openSync(abs, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+    try { buf = readFileSync(fd) } finally { closeSync(fd) }
+  } catch { return { skipped: 'unreadable' } }
+  const order = utf16Order(buf)
+  if (order === 'le') return { text: buf.subarray(2).toString('utf16le'), size: st.size, encoding: 'utf-16le' }
+  if (order === 'be') {
+    const body = buf.subarray(2)
+    const swapped = Buffer.from(body.subarray(0, body.length - (body.length % 2))).swap16()
+    return { text: swapped.toString('utf16le'), size: st.size, encoding: 'utf-16be' }
+  }
+  if (buf.subarray(0, 8192).includes(0)) return { skipped: 'binary', size: st.size }
+  return { text: buf.toString('utf8'), size: st.size }
 }
 
-export const fileSize = (abs) => { try { return statSync(abs).size } catch { return 0 } }
+/** Size of a regular file (0 for symlinks and missing files). */
+export const fileSize = (abs) => { const st = lstat(abs); return st && st.isFile() ? st.size : 0 }

@@ -4,7 +4,7 @@ import { existsSync, readdirSync, writeFileSync, mkdtempSync, utimesSync } from 
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { budget, checkMedia, isMedia } from '../src/checks/media.mjs'
-import { inferCommands, checkInstall } from '../src/checks/install.mjs'
+import { inferCommands, checkInstall, cleanupClone } from '../src/checks/install.mjs'
 import { checkDemo, globBase, collectOutputs } from '../src/checks/demo.mjs'
 import { runShell, tail } from '../src/lib/exec.mjs'
 import { runChecks, exitCodeFor } from '../src/run.mjs'
@@ -55,7 +55,9 @@ test('inferCommands: npm with and without dependencies, pytest, make, nothing', 
 test('install: the good fixture passes its tests in a fresh clone, and the clone is removed', async () => {
   const dir = makeRepo('good-skill')
   const base = mkdtempSync(join(tmpdir(), 'skill-ci-base-'))
-  const res = await checkInstall(ctxFor(dir), { tmpBase: base })
+  const ctx = ctxFor(dir)
+  const res = await checkInstall(ctx, { tmpBase: base })
+  cleanupClone(ctx)
   assert.deepEqual(res.findings, [])
   assert.equal(res.details.test.code, 0)
   assert.match(res.note, /npm test.*passed/)
@@ -108,7 +110,8 @@ test('demo: a failing command, no outputs and stale outputs', async () => {
   utimesSync(join(dir, 'out', 'old.txt'), new Date(Date.now() - 3600e3), new Date(Date.now() - 3600e3))
   const fail = await checkDemo(ctxFor(dir, { demo: { command: 'exit 3', outputs: ['nothing/*.png'] } }))
   assert.deepEqual(rules(fail.findings), ['demo/failed', 'demo/no-outputs'])
-  const stale = await checkDemo(ctxFor(dir, { demo: { command: 'true', outputs: ['out/*.txt'] } }))
+  // committed files are in the clone already; a demo that writes nothing leaves them older than the run
+  const stale = await checkDemo(ctxFor(dir, { demo: { command: 'true', outputs: ['docs/*.svg'] } }))
   assert.deepEqual(rules(stale.findings), ['demo/stale-outputs'])
   assert.equal((await checkDemo(ctxFor(dir))).skipped, true)
 })
