@@ -427,8 +427,21 @@ test('P2-1: inside bubblewrap the code cannot read ancestor environments, /home 
   assert.ok(existsSync(join(d, 'made')))
 })
 
+test('P2-1: the sweep never targets broad folders or its own ancestors', async () => {
+  const { sweepable } = await import('../src/lib/exec.mjs')
+  for (const p of ['/', tmpdir(), '/home', '/usr/bin']) assert.equal(sweepable(p), false, p)
+  assert.equal(sweepable(join(tmpdir(), 'skill-ci-clone-x', 'repo')), true)
+  // a process working inside the swept folder does not kill itself
+  const d = join(mkdtempSync(join(tmpdir(), 'skill-ci-self-')), 'clone')
+  mkdirSync(d)
+  const exec = new URL('../src/lib/exec.mjs', import.meta.url).href
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', `import { sweep } from '${exec}'; sweep({ root: process.cwd() }); console.log('alive')`], { cwd: d, encoding: 'utf8' })
+  assert.match(r.stdout, /alive/)
+})
+
 test('P2-1: the sweep kills processes whose working folder is inside the clone', async () => {
-  const d = mkdtempSync(join(tmpdir(), 'skill-ci-sweep-'))
+  const d = join(mkdtempSync(join(tmpdir(), 'skill-ci-sweep-')), 'clone')
+  mkdirSync(d)
   const p = spawn('sleep', ['30'], { cwd: d, detached: true, stdio: 'ignore' })
   await new Promise((r) => setTimeout(r, 200))
   assert.ok(sweep({ root: d }) >= 1)

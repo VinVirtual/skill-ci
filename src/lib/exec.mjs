@@ -8,7 +8,7 @@
 //     anything whose working folder is inside the clone (defence in depth; a determined process can escape it).
 import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, readdirSync, readFileSync, readlinkSync, existsSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { tmpdir, homedir } from 'node:os'
 import { join, dirname, resolve, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { cleanBlock } from './sanitize.mjs'
@@ -66,11 +66,30 @@ const procs = () => { try { return readdirSync('/proc').filter((d) => /^\d+$/.te
  * Linux, best effort: kills processes left behind by a run, found by the run marker in their environment,
  * by session id, or by a working folder inside the clone.
  */
+/** This process and its ancestors: never swept, even when one of them works inside the clone. */
+function ancestors() {
+  const out = new Set([process.pid, 1])
+  let pid = process.pid
+  for (let i = 0; i < 64 && pid > 1; i++) {
+    try { pid = Number(readFileSync(`/proc/${pid}/stat`, 'latin1').replace(/^.*\)\s/, '').split(' ')[1]) } catch { break }
+    out.add(pid)
+  }
+  return out
+}
+
+/** A folder narrow enough to sweep by working folder: not /, the temp folder, a home folder or a shallow system path. */
+export function sweepable(root) {
+  const r = resolve(root)
+  const shallow = r.split(sep).filter(Boolean).length < 3
+  return !shallow && r !== resolve(tmpdir()) && r !== resolve(homedir())
+}
+
 export function sweep({ marker, session, root } = {}) {
   let killed = 0
-  const realRoot = root ? resolve(root) : null
+  const realRoot = root && sweepable(root) ? resolve(root) : null
+  const keep = ancestors()
   for (const pid of procs()) {
-    if (pid === process.pid || pid === 1) continue
+    if (keep.has(pid)) continue
     let hit = false
     if (marker) { try { hit = readFileSync(`/proc/${pid}/environ`, 'latin1').includes(`SKILL_CI_RUN=${marker}\0`) } catch {} }
     if (!hit && session) { try { hit = Number(readFileSync(`/proc/${pid}/stat`, 'latin1').replace(/^.*\)\s/, '').split(' ')[3]) === session } catch {} }
