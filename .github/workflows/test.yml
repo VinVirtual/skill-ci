@@ -47,6 +47,7 @@ jobs:
         uses: ./
         with:
           path: .scratch/good-skill
+          run-commands: "true"   # our own fixture: trusted code
           badge-file: .scratch/badge.json
           artifact-name: good-skill-demo
       - name: Bad fixture (must fail)
@@ -55,7 +56,6 @@ jobs:
         uses: ./
         with:
           path: .scratch/bad-skill
-          run-commands: "false"
       - name: Check the outcomes
         env:
           GOOD: ${{ steps.good.outputs.result }}

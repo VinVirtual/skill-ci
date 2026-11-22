@@ -29,7 +29,7 @@ Script safety findings are warnings on purpose. They are patterns worth a second
 
 ## Install
 
-As a GitHub Action, add [`examples/skill-ci.yml`](examples/skill-ci.yml) to your skill repository as `.github/workflows/skill-ci.yml`:
+As a GitHub Action, add [`examples/skill-ci.yml`](examples/skill-ci.yml) to your skill repository as `.github/workflows/skill-ci.yml`. By default it only reads files:
 
 ```yaml
 on: { push: { branches: [main] }, pull_request: {} }   # pull_request, never pull_request_target
@@ -56,7 +56,7 @@ git clone https://github.com/VinVirtual/skill-ci ~/.claude/skills/skill-ci
 ```bash
 S=~/.claude/skills/skill-ci
 $S/skill-ci check path/to/my-skill --no-run    # read files only: SKILL.md, README, LICENSE, secrets, scripts, media
-$S/skill-ci check path/to/my-skill             # also: clone, run the tests, run the demo
+$S/skill-ci check path/to/my-skill             # also: clone, run the tests, run the demo (runs the repo's code)
 $S/skill-ci check . --summary out.md --html out.html --badge badge.json
 $S/skill-ci init path/to/my-skill              # write a starter .skill-ci.yml
 ```
@@ -82,31 +82,35 @@ demo:
   outputs: [ "out/*.png", "out/*.mp4" ]   # uploaded as a workflow artifact
 media: { max-file-mb: 5, max-total-mb: 15, max-other-file-mb: 10, max-repo-mb: 50 }
 max-runtime: 1800              # seconds for all repository commands together
+sandbox: { mode: auto, network: false }   # bubblewrap: auto | require | off
 secrets:
   allowlist: .skill-ci-allow   # one value per line, /regex/ lines, or path:<glob>
   allow-emails: [ "*@my-company.example" ]
 footguns:
-  ignore: [ "vendor/**", "third_party/**", "dist/**", "**/*.min.js" ]   # the default; a list here replaces it
+  ignore: [ "vendor/**", "third_party/**", "dist/**", "**/*.min.js" ]   # the default; a list here replaces it, so repeat these if you still want them
 ```
 
 Unknown keys are errors with a "did you mean" hint, so a typo never turns a check off quietly. To silence one line, add a comment with `skill-ci: allow` (optionally followed by rule ids) on it.
 
 ## Security
 
-skill-ci reads files that anyone who opens a pull request can write, and its fresh-clone test and demo run the repository's own commands. Treat both as hostile. What skill-ci does about it:
+skill-ci has two halves, and they carry very different risk.
 
-- **Repository commands run with an allow-listed environment**: `PATH`, locale and `TZ`, plus `CI`, `SKILL_CI` and a throwaway `HOME`/`TMPDIR`. Tokens and every `GITHUB_*`, `ACTIONS_*` and `RUNNER_*` variable are dropped, so the code cannot write `$GITHUB_ENV`/`$GITHUB_PATH` or reach the runtime token.
-- **They run in a throwaway clone with its origin remote removed**, never in your checkout; that includes the demo. Its output files are copied out (regular files only, no symlinks, nothing from `.git`, at most 200 files and 500 MB) before the clone is deleted.
-- **Hard time limits**: each command has its own limit (`test.timeout`, `demo.timeout`), and `max-runtime` (1800 s) covers all of them together. When the limit passes, the whole process group is killed, plus anything that slipped out with `setsid`. skill-ci does not wait for background processes.
-- **Fork pull requests and `pull_request_target` runs are untrusted by default.** No repository command runs (the summary says "fresh-clone test not run"), and the overrides a pull request could use to hide findings are ignored. `trust-pull-requests: "true"` turns this off; don't.
-- **`lock-config: "true"`** (CLI `--lock-config`) ignores those overrides on every run: `ignore`, `disable`, `fail-on`, `checks`, `.skill-ci-allow`, `allow-emails`, `footguns.ignore` and inline `skill-ci: allow` comments. To keep your own settings anyway, check out the base branch's `.skill-ci.yml` somewhere outside the repository folder and pass it as `config`.
-- **Output is cleaned before it is published.** Control characters and ANSI escapes are removed, Markdown outside code spans is escaped, and every printed line except the annotations sits inside `::stop-commands::<random>`. Secrets and emails in test output are redacted. Secret values never appear, only their length. The summary stays under 1 MB.
-- **Symlinks are never followed** (not read, not sized, not uploaded), the config file must be a regular file under 64 KB, and errors never quote file content.
-- **Scans cannot be dodged by format.** UTF-16 files are decoded, long lines are scanned in overlapping pieces, unknown binaries and files over 20 MB are reported as not scanned (a warning, so `fail-on: warning` catches them), and every pattern has bounded repetition inside a time budget.
+**The static checks** (SKILL.md, README, licence, secrets, script safety, media) only read files. They are the product, and they are what runs by default. Repository content is treated as hostile here. Output is cleaned of control characters and escape sequences, Markdown outside code spans is escaped, and everything except the annotations is printed inside `::stop-commands::<random>`. Patterns have bounded repetition. Symlinks are not followed. Secret values are never printed, only their type and length. A file that cannot be scanned (unreadable, or over 20 MB) is an error. These measures cover the cases in the test suite; they are not a proof that no input can slip past a pattern.
 
-What your workflow must do: trigger on `pull_request`, not `pull_request_target` with a checkout of the pull request head. Keep `persist-credentials: false` and `permissions: contents: read`. Give the job no secrets. Pin skill-ci to a full commit SHA. [`examples/skill-ci.yml`](examples/skill-ci.yml) does all of this.
+**The fresh-clone test and the demo run the repository's own code.** That is running someone's code in your job, with your job's privileges. skill-ci cannot make that safe:
 
-What remains: repository code still runs as the runner's user on that machine. It can read files the user can read (with `persist-credentials: false` the checkout holds no token) and use the network. Run the fresh-clone test only where that is acceptable; `run-commands: "false"` turns it off.
+- Code running as the job's user can read other processes' environments under `/proc` (including the runner's tokens), the runner's own files, and the checkout's `.git/config`. It can also leave processes behind that outlive the step.
+- What skill-ci adds is narrowing, not isolation. Commands get an allow-listed environment and a throwaway HOME. They run in a fresh clone with its remote and reflog removed, and with a time limit. Afterwards their process group, their session, anything carrying a run marker and anything still working inside the clone is killed.
+- When bubblewrap (`bwrap`) works on the machine, commands run inside it. The sandbox has its own process, user and network namespaces, so no network (unless `sandbox.network: true`) and no view of other processes. The root is read-only, `/home` and `/tmp` are empty, and only the clone is writable. The summary says "sandboxed with bubblewrap" only when that actually happened. Many runners (containers, Ubuntu 24.04's user-namespace restrictions) cannot run it, and then it is not used. `sandbox.mode: require` refuses to run anything without it.
+
+So running commands is a trust decision you make explicitly:
+
+- `run-commands` is `false` by default, for the action and for the CLI under `--github`. Set it to exactly `"true"`; any other value means false. The summary header then says the run "ran repository code with this job's privileges".
+- Turn it on only for your own repository and trusted branches. It never runs for anything but `push` and pull requests from the same repository: not for fork pull requests, `pull_request_target`, `workflow_run`, `issue_comment`, schedules or manual runs. Those events also lock the config (below).
+- Put the fresh-clone test in a **separate job** that has `permissions: {}`, `persist-credentials: false` on checkout, no secrets and no steps after skill-ci. A process left behind can then reach nothing worth having. [`examples/skill-ci.yml`](examples/skill-ci.yml) is laid out this way: a static job for every pull request, and a commands job for pushes only.
+
+**Who decides the verdict.** A pull request can edit `.skill-ci.yml`, `.skill-ci-allow` and inline `skill-ci: allow` comments. `lock-config` (on by default for untrusted events; any input value other than exactly `"false"` turns it on) ignores the settings that could hide findings or change limits: `ignore`, `disable`, `fail-on`, `checks`, allowlists, `footguns.ignore`, `media`, `skills`, `name`, `max-runtime` and `sandbox`. A config whose real path is outside the workspace is trusted, so you can check out the base branch's copy elsewhere and pass it as `config`.
 
 ## Action inputs and outputs
 
@@ -115,20 +119,20 @@ What remains: repository code still runs as the runner's user on that machine. I
 | `path` | `.` | folder of the skill repository |
 | `config` | | config file, if not `.skill-ci.yml` |
 | `fail-on` | from config | `error`, `warning` or `never` |
-| `run-commands` | `true` | `false` skips the fresh-clone test and the demo, so no repository code runs (always skipped for fork pull requests and `pull_request_target`) |
-| `lock-config` | `false` | `true` ignores the in-repo settings that could hide findings (always on for fork pull requests) |
-| `trust-pull-requests` | `false` | `true` runs commands and honours overrides for fork pull requests too; not recommended |
+| `run-commands` | `false` | exactly `"true"` runs the fresh-clone test and the demo: the repository's code, with this job's privileges. Never for untrusted events |
+| `lock-config` | `false` | anything but exactly `"false"` ignores the in-repo settings that could hide findings (always on for untrusted events) |
+| `trust-pull-requests` | `false` | exactly `"true"` runs commands and honours overrides for untrusted events too. Dangerous; do not use |
 | `badge-file` | | write a [shields.io endpoint](https://shields.io/badges/endpoint-badge) badge JSON here |
 | `artifact-name` | `skill-ci-demo` | name of the demo artifact |
 | `node-version` | `22` | empty uses the runner's Node |
 
-Outputs: `result` (`pass`, `warn`, `fail`), `errors`, `warnings`, `tests-run`, `badge`. The action writes the job summary, adds file:line annotations to the pull request, uploads the demo files (with a pinned `actions/upload-artifact`), and fails the step last, so the artifact is uploaded even when checks fail.
+Outputs: `result` (`pass`, `warn`, `fail`), `errors`, `warnings`, `tests-run`, `badge`. The action writes the job summary, adds file:line annotations to the pull request, uploads the demo files when commands ran (with a pinned `actions/upload-artifact`), and fails the step last, so the artifact is uploaded even when checks fail.
 
 ## How it works
 
 1. **File list**: what git would publish (tracked files plus untracked ones that are not ignored). Outside git, a walk that skips `node_modules`, `.venv` and similar.
 2. **Static checks** read those files: SKILL.md (with a small built-in YAML reader for frontmatter), README, LICENSE, the secrets scan, the script scan (strings and comments are stripped from JS and Python first, Markdown is scanned only inside code), and the media sizes.
-3. **Fresh-clone test**: `git clone` of the last commit into a temp folder named after the repository (origin removed), then the install and test commands there, with a scrubbed environment and a time limit. The clone is deleted afterwards (`--keep-clone` keeps it).
+3. **Fresh-clone test** (only when commands are allowed): `git clone` of the last commit into a temp folder named after the repository (remote and reflog removed), then the install and test commands there, inside bubblewrap when it works, with an allow-listed environment and a time limit. The clone is deleted afterwards (`--keep-clone` keeps it).
 4. **Demo**: the configured command in the same throwaway clone; the files that match `demo.outputs` are copied to a temp folder for upload.
 5. **Report**: console text, Markdown (the job summary), HTML (`--html`), JSON (`--json`) and the badge.
 
@@ -144,18 +148,19 @@ Outputs: `result` (`pass`, `warn`, `fail`), `errors`, `warnings`, `tests-run`, `
 - **Pattern matching, not analysis.** The secrets and script checks match patterns line by line. They miss secrets split across lines or encoded, and they flag test files that hold fake secrets on purpose. Use the allowlist for those.
 - **Fake keys that look real are still reported.** Values containing `EXAMPLE`, `dummy` or `placeholder` and stand-in URL passwords (`secret`, `password`) are skipped; anything else is not guessed at.
 - The YAML reader covers what frontmatter and the config use (maps, lists, flow collections, quoted, plain and block scalars). Anchors, aliases, tags and multiple documents are refused with a clear error rather than guessed.
-- The fresh-clone test runs the repository's own commands. Only run it on code you trust; `--no-run` (or `run-commands: "false"`) reads files only. Python projects get a venv in the clone, and `pip` needs the network.
+- The fresh-clone test runs the repository's own code (see [Security](#security)). Only run it on code you trust. Inside bubblewrap there is no network unless `sandbox.network: true`, so installs that download packages fail without it.
 - Media budget counts committed files only; Git LFS pointers count as their small pointer size.
 - Tested on Linux (Node 22 and 24). It needs `bash` and `git`; macOS should work, Windows has not been tested.
 
 ## Development
 
 ```bash
-./skill-ci test      # 152 tests with node --test: the YAML reader, config validation, globs, every check on
+./skill-ci test      # 168 tests with node --test: the YAML reader, config validation, globs, every check on
                      # strings and on throwaway git repos built from the fixtures, fresh clones, the demo,
                      # Markdown/HTML/annotation/badge output, the command line end to end, and security
-                     # regressions (env scrubbing, timeouts that escape with setsid, symlinks, injection into
-                     # workflow commands and the summary, pattern timing on hostile input, locked config)
+                     # regressions (event trust, fail-closed inputs, environment allow-list, bubblewrap when
+                     # usable, leftover-process sweep, symlinks, injection into workflow commands and the
+                     # summary, pattern timing on hostile input, locked config, redaction)
 ```
 
 The workflow in [`.github/workflows/test.yml`](.github/workflows/test.yml) runs the tests, then runs the action itself on both fixtures (the good one must pass and upload its demo, the bad one must fail with at least 5 errors) and on this repository. Fake secrets in the tests are assembled at run time, so none is committed.

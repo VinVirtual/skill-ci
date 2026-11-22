@@ -1,5 +1,6 @@
 // Markdown helpers: relative links, inline-code paths and absolute home paths, with line numbers.
 import { posix } from 'node:path'
+import { chunks } from './sanitize.mjs'
 
 /** Lines of a Markdown text with a flag for lines inside fenced code blocks. */
 export function markdownLines(text) {
@@ -23,13 +24,18 @@ const HTML_SRC_RE = /<(?:img|a|source|video)\b[^>]{0,1000}?\s(?:src|href)\s{0,5}
 /** Relative link targets outside code: { target, line, image }. URLs, mail links and #anchors are left out. */
 export function relativeLinks(text) {
   const out = []
+  const seen = new Set()
   for (const { line, n, code } of markdownLines(text)) {
     if (code) continue
-    const plain = line.replace(/`[^`]*`/g, '')
-    for (const m of plain.matchAll(LINK_RE)) push(m[2], n, m[1] === '!')
-    for (const m of plain.matchAll(HTML_SRC_RE)) push(m[1], n, /^<(img|source|video)/i.test(m[0]))
+    for (const { text } of chunks(line)) {
+      const plain = text.replace(/`[^`]{0,2000}`/g, '')
+      for (const m of plain.matchAll(LINK_RE)) push(m[2], n, m[1] === '!')
+      for (const m of plain.matchAll(HTML_SRC_RE)) push(m[1], n, /^<(img|source|video)/i.test(m[0]))
+    }
   }
   function push(raw, n, image) {
+    if (seen.has(`${n}\0${raw}`)) return
+    seen.add(`${n}\0${raw}`)
     if (/^[a-z][a-z0-9+.-]*:/i.test(raw) || raw.startsWith('#') || raw.startsWith('//')) return
     let target = raw.split('#')[0].split('?')[0]
     try { target = decodeURIComponent(target) } catch {}
@@ -43,7 +49,7 @@ export function codePaths(text) {
   const out = []
   for (const { line, n, code } of markdownLines(text)) {
     if (code) continue
-    for (const m of line.matchAll(/`([^`\s]+)`/g)) {
+    for (const m of line.slice(0, 20000).matchAll(/`([^`\s]{1,500})`/g)) {
       const t = m[1]
       if (/[*<>{}|$]/.test(t.replace(/^(\$\{?\w+\}?|~\/\.claude\/skills\/[\w.-]+)\//, ''))) continue
       if (!t.includes('/') || /^[a-z][a-z0-9+.-]*:\/\//i.test(t) || /^@/.test(t)) continue

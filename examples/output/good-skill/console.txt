@@ -5,6 +5,6 @@ skill-ci 0.1.0  good-skill  good-skill
   PASS Secrets and personal data   11 files scanned
   PASS Script safety               6 files checked
   PASS Media size budget           1 media files, 0.00 MB of 15 MB
-  PASS Fresh-clone install test    `npm test` passed in 0.4 s
+  PASS Fresh-clone install test    `npm test` passed in 0.5 s
   PASS Demo                        1 output file(s)
-  Result: PASS  0 errors, 0 warnings, 0 notices  (0.5 s)
+  Result: PASS  0 errors, 0 warnings, 0 notices  (0.7 s)

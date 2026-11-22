@@ -144,11 +144,34 @@ export function looksBinary(abs) {
   return buf.includes(0)
 }
 
+/** UTF-16 without a byte-order mark: most code units of the first 4 KB have a zero high byte on one side only. */
+export function guessUtf16(buf) {
+  const n = Math.min(buf.length, 4096) & ~1
+  if (n < 16) return null
+  let oddZero = 0, evenZero = 0
+  for (let i = 0; i < n; i += 2) { if (buf[i] === 0) evenZero++; if (buf[i + 1] === 0) oddZero++ }
+  const pairs = n / 2
+  if (oddZero > pairs * 0.3 && evenZero < pairs * 0.05) return 'le'
+  if (evenZero > pairs * 0.3 && oddZero < pairs * 0.05) return 'be'
+  return null
+}
+
+export const MAX_STRINGS = 8 * 1024 * 1024
+/** Printable runs in a binary file (ASCII, and UTF-16LE text), like `strings`, so a key inside a binary is still seen. */
+export function binaryStrings(buf) {
+  const latin = buf.toString('latin1')
+  const out = []
+  let size = 0
+  for (const m of latin.matchAll(/[\x20-\x7e\t]{6,}/g)) { out.push(m[0]); size += m[0].length; if (size > MAX_STRINGS) break }
+  for (const m of latin.matchAll(/(?:[\x20-\x7e]\x00){6,}/g)) { out.push(m[0].replace(/\x00/g, '')); size += m[0].length / 2; if (size > MAX_STRINGS * 1.5) break }
+  return out.join('\n')
+}
+
 const utf16Order = (buf) => (buf[0] === 0xff && buf[1] === 0xfe ? 'le' : buf[0] === 0xfe && buf[1] === 0xff ? 'be' : null)
 
 export const MAX_TEXT_BYTES = 20 * 1024 * 1024
 
-/** Reads a file as text (UTF-8, or UTF-16 with a byte-order mark).
+/** Reads a file as text (UTF-8, or UTF-16 with or without a byte-order mark); binaries come with their strings.
  *  Returns { text } or { skipped: 'binary' | 'too-large' | 'unreadable' | 'symlink' }. */
 export function readText(abs) {
   const st = lstat(abs)
@@ -161,14 +184,14 @@ export function readText(abs) {
     const fd = openSync(abs, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
     try { buf = readFileSync(fd) } finally { closeSync(fd) }
   } catch { return { skipped: 'unreadable' } }
-  const order = utf16Order(buf)
-  if (order === 'le') return { text: buf.subarray(2).toString('utf16le'), size: st.size, encoding: 'utf-16le' }
+  const order = utf16Order(buf) ?? (buf.subarray(0, 8192).includes(0) ? guessUtf16(buf) : null)
+  if (order === 'le') return { text: buf.subarray(utf16Order(buf) ? 2 : 0).toString('utf16le'), size: st.size, encoding: 'utf-16le' }
   if (order === 'be') {
-    const body = buf.subarray(2)
+    const body = utf16Order(buf) ? buf.subarray(2) : buf
     const swapped = Buffer.from(body.subarray(0, body.length - (body.length % 2))).swap16()
     return { text: swapped.toString('utf16le'), size: st.size, encoding: 'utf-16be' }
   }
-  if (buf.subarray(0, 8192).includes(0)) return { skipped: 'binary', size: st.size }
+  if (buf.subarray(0, 8192).includes(0)) return { skipped: 'binary', size: st.size, strings: binaryStrings(buf) }
   return { text: buf.toString('utf8'), size: st.size }
 }
 

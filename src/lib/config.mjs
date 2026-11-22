@@ -20,6 +20,7 @@ export const DEFAULTS = Object.freeze({
   demo: { command: null, outputs: [], timeout: 600 },
   media: { 'max-file-mb': 5, 'max-total-mb': 15, 'max-other-file-mb': 10, 'max-repo-mb': 50 },
   'max-runtime': 1800,
+  sandbox: { mode: 'auto', network: false },
   secrets: { allowlist: '.skill-ci-allow', 'allow-emails': [] },
   footguns: { ignore: ['vendor/**', 'third_party/**', '**/*.min.js', 'dist/**'] },
 })
@@ -58,6 +59,7 @@ const KINDS = {
   'demo.command': 'string?', 'demo.outputs': 'strings', 'demo.timeout': 'seconds',
   'media.max-file-mb': 'positive', 'media.max-total-mb': 'positive', 'media.max-other-file-mb': 'positive', 'media.max-repo-mb': 'positive',
   'max-runtime': 'seconds',
+  'sandbox.mode': 'enum:auto|require|off', 'sandbox.network': 'boolean',
   'secrets.allowlist': 'string?', 'secrets.allow-emails': 'strings',
   'footguns.ignore': 'strings',
 }
@@ -180,6 +182,10 @@ media:
   max-repo-mb: 50           # everything committed
 
 max-runtime: 1800           # seconds for all repository commands together
+
+sandbox:                    # repository commands run inside bubblewrap when it works on the machine
+  mode: auto                # auto (use it when available) | require (never run without it) | off
+  network: false            # true lets install commands download packages from inside the sandbox
 
 secrets:
   allowlist: .skill-ci-allow   # one value per line; "path:<glob>" skips files

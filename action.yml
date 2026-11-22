@@ -16,13 +16,13 @@ inputs:
     description: error, warning or never. Empty uses the config (default error).
     default: ""
   run-commands:
-    description: Set to "false" to skip the fresh-clone install test and the demo (no repository code is run). Fork pull requests and pull_request_target never run commands unless trust-pull-requests is "true".
-    default: "true"
+    description: Set to exactly "true" to run the fresh-clone test and the demo. That runs the repository's code with this job's privileges; only for your own repository, in a separate job with no secrets. Never runs for events other than push and same-repository pull requests.
+    default: "false"
   lock-config:
     description: Set to "true" to ignore what the repository can use to hide findings (ignore, disable, fail-on, checks, .skill-ci-allow, inline allow comments). Always on for fork pull requests unless trust-pull-requests is "true".
     default: "false"
   trust-pull-requests:
-    description: Set to "true" to run commands and honour overrides for fork pull requests and pull_request_target. Not recommended.
+    description: Set to exactly "true" to run commands and honour overrides for untrusted events (fork pull requests, pull_request_target, workflow_run, issue_comment...). Dangerous; do not use.
     default: "false"
   badge-file:
     description: Write a shields.io endpoint badge JSON to this path (relative to the workspace).
@@ -45,7 +45,7 @@ outputs:
     description: Number of warnings.
     value: ${{ steps.check.outputs.warnings }}
   tests-run:
-    description: "true" when the fresh-clone test ran.
+    description: 'Whether the fresh-clone test ran: "true" or "false".'
     value: ${{ steps.check.outputs.tests-run }}
   badge:
     description: Absolute path of the badge JSON, when badge-file is set.
@@ -73,9 +73,10 @@ runs:
         args=(check "$SKILL_CI_PATH" --github --no-color)
         [ -n "$SKILL_CI_CONFIG" ] && args+=(--config "$SKILL_CI_CONFIG")
         [ -n "$SKILL_CI_FAIL_ON" ] && args+=(--fail-on "$SKILL_CI_FAIL_ON")
-        [ "$SKILL_CI_RUN" = "false" ] && args+=(--no-run)
+        # fail closed: only the exact strings "true" / "false" change the safe defaults
+        [ "$SKILL_CI_RUN" = "true" ] && args+=(--run-commands)
         [ -n "$SKILL_CI_BADGE" ] && args+=(--badge "$SKILL_CI_BADGE")
-        [ "$SKILL_CI_LOCK" = "true" ] && args+=(--lock-config)
+        [ "$SKILL_CI_LOCK" != "false" ] && args+=(--lock-config)
         [ "$SKILL_CI_TRUST" = "true" ] && args+=(--trust-pull-request)
         set +e
         node "$GITHUB_ACTION_PATH/src/cli.mjs" "${args[@]}" --verbose

@@ -11,6 +11,8 @@ const RESULT_WORD = { pass: 'passed', warn: 'passed with warnings', fail: 'faile
 
 /** Escapes Markdown and HTML syntax in plain text. */
 export const escapeMd = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/([\\`*_[\]()!#~|])/g, '\\$1')
+  // GitHub turns bare URLs and www. names into links; break them so a file name cannot add one
+  .replace(/\b(https?|ftp|mailto):/gi, '$1\\:').replace(/\bwww\./gi, 'www\\.')
 
 /** Text for a Markdown table cell: one line, code spans kept (with | escaped), everything else escaped. */
 export function cell(text) {
@@ -56,8 +58,13 @@ export function toMarkdown(report, options = {}) {
   let md = renderMarkdown(report, options)
   if (Buffer.byteLength(md) > MAX_SUMMARY_BYTES) md = renderMarkdown(report, { ...options, maxRows: 10, tailLines: 10 })
   if (Buffer.byteLength(md) > MAX_SUMMARY_BYTES) {
-    md = Buffer.from(md).subarray(0, MAX_SUMMARY_BYTES - 200).toString('utf8').replace(/\uFFFD*$/, '')
-    md += '\n\n</details>\n\n...the summary was cut at 1 MB. Run `skill-ci check` locally for the full report.\n'
+    md = Buffer.from(md).subarray(0, MAX_SUMMARY_BYTES - 400).toString('utf8').replace(/\uFFFD*$/, '')
+    // close an open code fence and details block before the note, so the note is not swallowed by them
+    let fence = null
+    for (const l of md.split('\n')) { const f = l.match(/^(`{3,})/); if (f) fence = fence && f[1] === fence ? null : (fence ?? f[1]) }
+    if (fence) md += `\n${fence}`
+    if ((md.match(/<details>/g) || []).length > (md.match(/<\/details>/g) || []).length) md += '\n\n</details>'
+    md += '\n\n...the summary was cut at 1 MB. Run `skill-ci check` locally for the full report.\n'
   }
   return md
 }
@@ -69,6 +76,7 @@ function renderMarkdown(report, { linkBase = null, maxRows = MAX_ROWS, tailLines
   out.push(`## skill-ci: ${code(report.name)} ${word}`)
   out.push('')
   if (report.testsNotRun) { out.push('> [!NOTE]\n> The fresh-clone test did not run (see the table), so this result covers the static checks only.'); out.push('') }
+  if (report.ranCommands) { out.push(`> [!WARNING]\n> This run ran repository code with this job's privileges${report.sandboxed ? ' (sandboxed with bubblewrap: no network unless enabled, own /proc, empty /home and /tmp)' : ''}.`); out.push('') }
   if (report.untrusted) { out.push(`Untrusted run (${cleanLine(report.untrusted)}): the repository's commands were not run.`); out.push('') }
   if (report.configLocked) { out.push('In-repository overrides (ignore, disable, allowlists, inline allow comments) were ignored: `lock-config` is on.'); out.push('') }
   out.push(`**${plural(totals.errors, 'error')}, ${plural(totals.warnings, 'warning')}, ${plural(totals.notices, 'notice')}** across ${report.checks.filter((c) => c.status !== 'skip').length} checks in ${seconds(report.durationMs)}.${report.failOn !== 'error' ? ` Fails on: ${report.failOn}.` : ''}`)

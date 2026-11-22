@@ -1,6 +1,7 @@
 // README basics: present, an install command, a licence section, working relative links and badges.
 import { posix } from 'node:path'
 import { finding } from '../lib/context.mjs'
+import { MAX_MARKDOWN } from './skill-md.mjs'
 import { relativeLinks, resolveFrom, markdownLines } from '../lib/markdown.mjs'
 
 const README_RE = /^readme(\.(md|markdown|rst|txt))?$/i
@@ -15,7 +16,7 @@ export function installLines(text) {
 
 /** For `git clone <url> <dest>` lines: the folder the clone lands in. */
 export function cloneTarget(line) {
-  const m = line.match(/\bgit clone\s+(?:(?:--?[\w-]+(?:[= ]\S+)?)\s+)*(\S+)(?:\s+([^\s#;&|]+))?/)
+  const m = line.slice(0, 2000).match(/\bgit clone\s+(?:(?:--?[\w-]{1,40}(?:[= ][^\s-]\S{0,200})?)\s+){0,10}(\S{1,500})(?:\s+([^\s#;&|]{1,500}))?/)
   if (!m) return null
   const url = m[1].replace(/[`'"]/g, '')
   const repo = url.replace(/\/+$/, '').replace(/\.git$/, '').split(/[/:]/).pop()
@@ -60,6 +61,7 @@ export function checkReadme(ctx) {
   const file = findReadme(ctx.files)
   if (!file) return { findings: [finding('readme/missing', 'error', 'No README at the repository root.', { file: 'README.md' })], note: 'missing' }
   const text = ctx.read(file)
+  if (text !== null && text.length > MAX_MARKDOWN) return { findings: [finding('readme/too-large', 'error', `${file} is over ${MAX_MARKDOWN / 1024} KB; it was not checked.`, { file })] }
   if (text === null) return { findings: [finding('readme/unreadable', 'error', `${file} could not be read as text.`, { file })] }
   return { findings: lintReadme(text, { file, name: ctx.repoName, exists: ctx.exists }), note: posix.basename(file) }
 }

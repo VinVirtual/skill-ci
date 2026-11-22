@@ -1,6 +1,9 @@
 ## skill-ci: `bad-skill` failed
 
-**10 errors, 18 warnings, 0 notices** across 7 checks in 0.5 s.
+> [!WARNING]
+> This run ran repository code with this job's privileges (sandboxed with bubblewrap: no network unless enabled, own /proc, empty /home and /tmp).
+
+**10 errors, 18 warnings, 0 notices** across 7 checks in 0.7 s.
 
 | Result | Check | Errors | Warnings | Details |
 |---|---|--:|--:|---|
@@ -10,7 +13,7 @@
 | ✗ fail | Secrets and personal data | 2 |  | 11 files scanned |
 | ▲ warn | Script safety |  | 14 | 9 files checked |
 | ✓ pass | Media size budget |  |  | 0 media files, 0.00 MB of 15 MB |
-| ✗ fail | Fresh-clone install test | 1 |  | `npm test` failed in 0.5 s |
+| ✗ fail | Fresh-clone install test | 1 |  | `npm test` failed in 0.6 s |
 | ○ skip | Demo |  |  | no demo.command set |
 
 ### SKILL.md
@@ -30,7 +33,7 @@
 |---|---|---|
 | error | `README.md:3` | Image "docs/demo.gif" is not in the repository, so it shows as broken on GitHub. <sub>`readme/missing-image`</sub> |
 | warning | `README.md:1` | The README is only 53 characters; say what the skill does, how to install it and how to use it. <sub>`readme/too-short`</sub> |
-| warning | `README.md:1` | The README has no install command.<br><sub>Fix: For example: git clone https://github.com/&lt;you&gt;/bad-skill \~/.claude/skills/bad-skill</sub> <sub>`readme/no-install`</sub> |
+| warning | `README.md:1` | The README has no install command.<br><sub>Fix: For example: git clone https\://github.com/&lt;you&gt;/bad-skill \~/.claude/skills/bad-skill</sub> <sub>`readme/no-install`</sub> |
 | warning | `README.md:1` | The README never mentions the licence.<br><sub>Fix: Add a "\#\# License" section that names it and links to LICENSE.</sub> <sub>`readme/no-licence-section`</sub> |
 
 ### Licence
@@ -71,14 +74,14 @@
 |---|---|---|
 | error | — | In a fresh clone, the test command `npm test` failed with exit code 1.<br><sub>Fix: Run it in a fresh clone yourself: a file that is ignored or never committed is the usual cause.</sub> <sub>`install/test-failed`</sub> |
 
-<details><summary>Test output: <code>npm test</code>, exit 1, 0.5 s</summary>
+<details><summary>Test output: <code>npm test</code>, exit 1, 0.6 s</summary>
 
 ```text
 
 > bad-skill@0.0.1 test
 > node --test
 
-✖ reads the local data file (1.302348ms)
+✖ reads the local data file (1.511688ms)
 ℹ tests 1
 ℹ suites 0
 ℹ pass 0
@@ -86,15 +89,15 @@
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 129.876945
+ℹ duration_ms 131.799538
 
 ✖ failing tests:
 
 test at tests/data.test.mjs:5:1
-✖ reads the local data file (1.302348ms)
-  Error: ENOENT: no such file or directory, open '/tmp/skill-ci-clone-FUmdR4/bad-skill/local-data.json'
+✖ reads the local data file (1.511688ms)
+  Error: ENOENT: no such file or directory, open '/tmp/skill-ci-clone-W9udU2/bad-skill/local-data.json'
       at readFileSync (node:fs:483:20)
-      at TestContext.<anonymous> (file:///tmp/skill-ci-clone-FUmdR4/bad-skill/tests/data.test.mjs:6:27)
+      at TestContext.<anonymous> (file:///tmp/skill-ci-clone-W9udU2/bad-skill/tests/data.test.mjs:6:27)
       at Test.runInAsyncScope (node:async_hooks:227:14)
       at Test.run (node:internal/test_runner/test:1402:25)
       at Test.start (node:internal/test_runner/test:1262:17)
@@ -102,7 +105,7 @@ test at tests/data.test.mjs:5:1
     errno: -2,
     code: 'ENOENT',
     syscall: 'open',
-    path: '/tmp/skill-ci-clone-FUmdR4/bad-skill/local-data.json'
+    path: '/tmp/skill-ci-clone-W9udU2/bad-skill/local-data.json'
   }
 ```
 

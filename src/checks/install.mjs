@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { finding } from '../lib/context.mjs'
-import { runShell, tail } from '../lib/exec.mjs'
+import { runShell, tail, bwrapAvailable } from '../lib/exec.mjs'
 import { cleanLine } from '../lib/sanitize.mjs'
 import { redactText } from './secrets.mjs'
 
@@ -77,6 +77,7 @@ export function freshClone(root, name, base = tmpdir()) {
     git(parent, ['clone', '--quiet', '--no-hardlinks', '--no-recurse-submodules', '--', root, dest])
     // the origin would point back at the real checkout (and its credentials); repository code gets no map to it
     git(dest, ['remote', 'remove', 'origin'])
+    rmSync(join(dest, '.git', 'logs'), { recursive: true, force: true }) // the reflog names the source path
   } catch (e) {
     rmSync(parent, { recursive: true, force: true })
     throw new Error(`git clone failed: ${cleanLine(String(e.stderr || e.message).trim().split('\n').pop()).slice(0, 200)}`)
@@ -112,11 +113,17 @@ function describeRun(label, command, r, seconds) {
   return `${label} \`${command}\` failed with exit code ${r.code}${r.signal ? ` (${r.signal})` : ''}.`
 }
 
-/** Runs a repository command in the clone within the run's time budget. */
+/** Runs a repository command in the clone within the run's time budget, sandboxed when the config asks and bwrap works. */
 export async function runInClone(ctx, command, seconds) {
   const timeoutMs = Math.max(100, Math.min(seconds * 1000, ctx.remainingMs ? ctx.remainingMs() : Infinity))
-  const r = await runShell(command, { cwd: ctx.clone.dest, timeoutMs, env: process.env })
-  return { r, details: { command, code: r.code, seconds: +(r.durationMs / 1000).toFixed(1), output: redactText(tail(r.output)) }, limit: +(timeoutMs / 1000).toFixed(1) }
+  const mode = ctx.config.sandbox?.mode ?? 'auto'
+  if (mode === 'require' && !bwrapAvailable()) {
+    return { refused: true, r: { code: null, timedOut: false, output: '' }, details: { command, code: null, seconds: 0, output: '(not run: sandbox.mode is require and bubblewrap is not available here)', sandboxed: false }, limit: 0 }
+  }
+  const r = await runShell(command, { cwd: ctx.clone.dest, timeoutMs, env: process.env, sandbox: mode !== 'off', network: Boolean(ctx.config.sandbox?.network) })
+  ctx.sandboxUsed = ctx.sandboxUsed || r.sandboxed
+  ctx.ranCommands = true
+  return { r, details: { command, code: r.code, seconds: +(r.durationMs / 1000).toFixed(1), output: redactText(tail(r.output)), sandboxed: r.sandboxed }, limit: +(timeoutMs / 1000).toFixed(1) }
 }
 
 export async function checkInstall(ctx, { tmpBase, log = () => {} } = {}) {
@@ -140,16 +147,18 @@ export async function checkInstall(ctx, { tmpBase, log = () => {} } = {}) {
   }
   if (install) {
     log(`install: ${cleanLine(install)}`)
-    const { r, details: d, limit } = await runInClone(ctx, install, cfg.timeout)
+    const { r, details: d, limit, refused } = await runInClone(ctx, install, cfg.timeout)
     details.install = d
+    if (refused) { findings.push(finding('install/no-sandbox', 'error', 'sandbox.mode is "require" but bubblewrap is not available, so no command was run.')); return { findings, details, note: 'not run: no sandbox', notRun: true } }
     if (r.code !== 0 || r.timedOut) {
       findings.push(finding('install/install-failed', 'error', describeRun('Install', install, r, limit)))
       return { findings, details, note: 'install failed' }
     }
   }
   log(`test: ${cleanLine(test)}`)
-  const { r, details: d, limit } = await runInClone(ctx, test, cfg.timeout)
+  const { r, details: d, limit, refused } = await runInClone(ctx, test, cfg.timeout)
   details.test = d
+  if (refused) { findings.push(finding('install/no-sandbox', 'error', 'sandbox.mode is "require" but bubblewrap is not available, so no command was run.')); return { findings, details, note: 'not run: no sandbox', notRun: true } }
   if (r.code !== 0 || r.timedOut) findings.push(finding('install/test-failed', 'error', describeRun('In a fresh clone, the test command', test, r, limit), { hint: 'Run it in a fresh clone yourself: a file that is ignored or never committed is the usual cause.' }))
   return { findings, details, note: `\`${test}\` ${r.code === 0 && !r.timedOut ? 'passed' : 'failed'} in ${d.seconds} s` }
 }

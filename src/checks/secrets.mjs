@@ -3,9 +3,9 @@
 // whole scan runs inside a time budget, so a hostile repository can neither hide a key nor stall the job.
 import { posix } from 'node:path'
 import { finding, mask, suppressed } from '../lib/context.mjs'
-import { globToRegExp, matchesAny, readText } from '../lib/files.mjs'
+import { globToRegExp, matchesAny, readText, MAX_TEXT_BYTES } from '../lib/files.mjs'
 import { homePaths } from '../lib/markdown.mjs'
-import { MEDIA_EXT } from './media.mjs'
+import { chunks, LINE_CHUNK } from '../lib/sanitize.mjs'
 
 /** Key formats with a recognisable prefix. level defaults to error. */
 export const SECRET_RULES = [
@@ -61,11 +61,7 @@ const SENSITIVE_FILES = [
   [/(^|\/)credentials(\.json)?$/i, 'credentials file'],
 ]
 
-/** Binary types a reader expects; any other file that turns out binary is reported as not scanned. */
-const KNOWN_BINARY = new Set([...MEDIA_EXT, 'zip', 'gz', 'tgz', 'bz2', 'xz', 'zst', '7z', 'rar', 'tar', 'jar', 'whl', 'wasm', 'so', 'dylib', 'dll', 'exe', 'o', 'a', 'class', 'pyc', 'node', 'sqlite', 'db', 'onnx', 'pt', 'pth', 'safetensors', 'ckpt', 'h5', 'npz', 'npy', 'gguf', 'pkl', 'bin', 'icns', 'eot', 'mo', 'parquet', 'arrow'])
-
-export const LINE_CHUNK = 2000
-const CHUNK_OVERLAP = 400
+export { LINE_CHUNK }
 export const SCAN_BUDGET_MS = 60000
 const MAX_ALLOW_REGEX = 200
 
@@ -102,13 +98,7 @@ export function parseAllowlist(text) {
 
 const allowedValue = (value, allow) => allow.values.includes(value) || allow.patterns.some((re) => re.test(String(value).slice(0, 600)))
 
-/** A line as pieces no longer than LINE_CHUNK, overlapping so a value on a boundary is still whole in one piece. */
-export function chunks(line) {
-  if (line.length <= LINE_CHUNK) return [{ text: line, offset: 0 }]
-  const out = []
-  for (let i = 0; i < line.length; i += LINE_CHUNK - CHUNK_OVERLAP) out.push({ text: line.slice(i, i + LINE_CHUNK), offset: i })
-  return out
-}
+export { chunks }
 
 /** Lines of 64 base64 characters in a row: the body of a PEM key whose header was removed. */
 const PEM_BODY_LINE = /^\s{0,8}[A-Za-z0-9+/]{64}\s*$/
@@ -178,19 +168,46 @@ export function scanText(text, file, { allow = parseAllowlist(''), allowEmails =
 /** Replaces anything that looks like a secret or an email in free text (command output) before it is published. */
 export function redactText(text) {
   let s = String(text)
+  // a private key block: everything from BEGIN to END (or to the end of the output) goes
+  s = s.replace(/-----BEGIN (?:[A-Z0-9]{1,20} ){0,4}PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]{1,60}-----|$)/g, '[redacted private key]')
   for (const r of SECRET_RULES) s = s.replace(r.re, (m, g1) => (typeof g1 === 'string' && g1 ? m.replace(g1, `[redacted ${r.label}]`) : `[redacted ${r.label}]`))
+  s = s.replace(/\b(Authorization["']?\s{0,5}[:=]\s{0,5}["']?(?:Basic|Bearer|Token|Digest)\s{1,5})[^\s"']{4,500}/gi, '$1[redacted]')
+  s = s.replace(/\b((?:Set-)?Cookie["']?\s{0,5}[:=]\s{0,5})[^\n]{1,2000}/gi, '$1[redacted]')
   s = s.replace(ASSIGN_QUOTED, (m, v) => m.replace(v, '[redacted]'))
+  s = s.replace(ASSIGN_BARE, (m, v) => m.replace(v, '[redacted]'))
+  // a bare 40-character AWS secret on a line that talks about AWS or secrets
+  s = s.split('\n').map((line) => (/aws|secret/i.test(line) ? line.replace(/(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/g, '[redacted]') : line)).join('\n')
+  // PEM-style bodies without a header: runs of 64-character base64 lines
+  s = s.replace(/(?:^[ \t]{0,8}[A-Za-z0-9+/]{64}[ \t]*\n){4,}(?:^[ \t]{0,8}[A-Za-z0-9+/=]{1,64}[ \t]*$\n?)?/gm, '[redacted key body]\n')
   s = s.replace(EMAIL_RE, (m) => (emailAllowed(m) ? m : '[redacted email]'))
   return s
 }
 
-/** Binary or unreadable text where a secret could hide: a warning, so fail-on warning catches it. */
+/** Anything that could not be scanned is an error: a secret could hide there. */
 function unscanned(file, info) {
-  const ext = posix.extname(file).slice(1).toLowerCase()
-  if (info.skipped === 'too-large') return finding('secrets/not-scanned', 'warning', `Not scanned: over ${20} MB.`, { file })
-  if (info.skipped === 'binary' && !KNOWN_BINARY.has(ext)) return finding('secrets/not-scanned', 'warning', 'Not scanned: binary content in a file that is not a known binary type.', { file })
-  if (info.skipped === 'unreadable') return finding('secrets/not-scanned', 'warning', 'Not scanned: could not be read.', { file })
+  if (info.skipped === 'too-large') return finding('secrets/not-scanned', 'error', `Not scanned: over ${MAX_TEXT_BYTES / 1024 / 1024} MB. Remove it or keep it out of the repository.`, { file })
+  if (info.skipped === 'unreadable' || info.skipped === 'binary') return finding('secrets/not-scanned', 'error', 'Not scanned: could not be read.', { file })
   return null
+}
+
+/** Key formats only, over the printable strings of a binary file (emails and paths there are mostly metadata). */
+export function scanStrings(strings, file, { allow = parseAllowlist(''), disabled = () => false } = {}) {
+  const out = []
+  const seen = new Set()
+  for (const line of strings.split('\n')) {
+    for (const { text: piece } of chunks(line)) {
+      for (const r of SECRET_RULES) {
+        for (const m of piece.matchAll(r.re)) {
+          const value = m[1] ?? m[0]
+          const rule = `secrets/${r.id}`
+          if (disabled(rule) || PLACEHOLDER_SECRET.test(value) && r.id !== 'private-key' || allowedValue(value, allow) || seen.has(rule + value)) continue
+          seen.add(rule + value)
+          out.push(finding(rule, r.level ?? 'error', `Looks like ${/^[aeiouAEIOU]/.test(r.label) ? 'an' : 'a'} ${r.label} inside a binary file: ${r.id === 'private-key' ? m[0] : mask(value)}.`, { file }))
+        }
+      }
+    }
+  }
+  return out
 }
 
 export function checkSecrets(ctx, { budgetMs = SCAN_BUDGET_MS } = {}) {
@@ -214,13 +231,14 @@ export function checkSecrets(ctx, { budgetMs = SCAN_BUDGET_MS } = {}) {
     }
     if (Date.now() > deadline) { left++; continue }
     const info = ctx.readInfo(file)
+    if (info.text === undefined && typeof info.strings === 'string') { scanned++; findings.push(...scanStrings(info.strings, file, { allow, disabled: ctx.disabled })); continue }
     if (info.text === undefined) { const f = unscanned(file, info); if (f) findings.push(f); continue }
     scanned++
     // SKILL.md home paths are already errors in the SKILL.md check
     const skipHomePaths = ctx.config.checks['skill-md'] && file.split('/').pop() === 'SKILL.md'
     findings.push(...scanText(info.text, file, { allow, allowEmails: ctx.config.secrets['allow-emails'], disabled: ctx.disabled, skipHomePaths, allowInline: ctx.allowInline }))
   }
-  if (left) findings.push(finding('secrets/not-scanned', 'warning', `The scan ran out of its ${Math.round(budgetMs / 1000)} s budget; ${left} file(s) were not scanned.`))
+  if (left) findings.push(finding('secrets/not-scanned', 'error', `The scan ran out of its ${Math.round(budgetMs / 1000)} s budget; ${left} file(s) were not scanned.`))
   return { findings, note: `${scanned} files scanned` }
 }
 

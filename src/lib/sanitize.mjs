@@ -17,3 +17,14 @@ export function cleanBlock(value) {
 
 /** True when a file name holds a control character (a line break in a name breaks line-based outputs). */
 export const hasControl = (s) => /[\u0000-\u001f\u007f]/.test(String(s))
+
+export const LINE_CHUNK = 2000
+const CHUNK_OVERLAP = 400
+
+/** A line as pieces no longer than LINE_CHUNK, overlapping so a value on a boundary is still whole in one piece. */
+export function chunks(line) {
+  if (line.length <= LINE_CHUNK) return [{ text: line, offset: 0 }]
+  const out = []
+  for (let i = 0; i < line.length; i += LINE_CHUNK - CHUNK_OVERLAP) out.push({ text: line.slice(i, i + LINE_CHUNK), offset: i })
+  return out
+}

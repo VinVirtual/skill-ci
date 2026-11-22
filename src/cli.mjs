@@ -34,11 +34,13 @@ Options for check:
   --html FILE          write the summary as a standalone HTML page
   --badge FILE         write a shields.io endpoint badge JSON
   --json               print the full report as JSON instead of text
-  --github             GitHub Actions mode: annotations, job summary, step outputs. On a fork pull request or
-                       pull_request_target, repository commands are not run and in-repo overrides are ignored
+  --github             GitHub Actions mode: annotations, job summary, step outputs. Repository commands (the
+                       fresh-clone test and the demo) run only with --run-commands, and never for an event
+                       other than push or a pull request from the same repository; those also lock the config
+  --run-commands       with --github: run the repository's commands. This runs its code with the job's privileges
   --lock-config        ignore what the repository can use to hide findings: ignore, disable, fail-on, checks,
                        .skill-ci-allow, allow-emails, footguns.ignore and inline allow comments
-  --trust-pull-request run commands and honour overrides even for an untrusted pull request (not recommended)
+  --trust-pull-request run commands and honour overrides even for an untrusted event (dangerous; do not use)
   --timeout SECONDS    time limit for each install, test and demo command (default 600)
   --tmp DIR            where the temp clone goes (default: the system temp folder)
   --keep-clone         keep the temp clone and print where it is
@@ -49,7 +51,7 @@ Exit codes: 0 passed, 1 failed (per --fail-on), 2 usage or config error.
 `
 
 const VALUE_FLAGS = new Set(['--config', '--only', '--fail-on', '--name', '--summary', '--html', '--badge', '--tmp', '--timeout'])
-const BOOL_FLAGS = new Set(['--no-run', '--json', '--github', '--keep-clone', '--verbose', '--no-color', '--quiet', '--lock-config', '--trust-pull-request'])
+const BOOL_FLAGS = new Set(['--no-run', '--json', '--github', '--keep-clone', '--verbose', '--no-color', '--quiet', '--lock-config', '--trust-pull-request', '--run-commands'])
 
 export function parseArgs(argv) {
   const out = { _: [], flags: {} }
@@ -89,7 +91,8 @@ async function cmdCheck(args) {
   // not run and the overrides it could put in .skill-ci.yml or .skill-ci-allow are ignored.
   const untrusted = github ? untrustedEvent(env) : null
   const trustPr = Boolean(f['trust-pull-request'])
-  const run = !f['no-run'] && !(untrusted && !trustPr)
+  // under --github, repository code runs only when asked for (--run-commands) and the event is trusted
+  const run = !f['no-run'] && (!github || Boolean(f['run-commands'])) && !(untrusted && !trustPr)
   const lockConfig = Boolean(f['lock-config']) || Boolean(untrusted && !trustPr)
   const token = github ? stopToken() : null
   // nothing printed between these two lines can run a workflow command, whatever the repository put in its names
@@ -134,12 +137,12 @@ async function cmdCheck(args) {
   return exitCodeFor(report)
 }
 
-/** Why this Actions run is untrusted (a fork pull request, pull_request_target), or null. */
+/** Why this Actions run is untrusted, or null. Only push events and pull requests from the same repository are trusted. */
 export function untrustedEvent(env = process.env) {
   const name = env.GITHUB_EVENT_NAME
-  if (name === 'pull_request_target') return 'pull_request_target event'
-  if (name === 'workflow_run') return 'workflow_run event'
-  if (!name || !/^pull_request/.test(name)) return null
+  if (!name) return 'unknown event'
+  if (name === 'push') return null
+  if (name !== 'pull_request') return `${name.replace(/[^\w-]/g, '').slice(0, 40)} event`
   let event = null
   try { event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8')) } catch { return 'pull request (event payload unreadable)' }
   const head = event?.pull_request?.head?.repo?.full_name

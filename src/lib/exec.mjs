@@ -1,11 +1,15 @@
-// Runs a repository's own commands (install, test, demo). That code is untrusted: in CI it may come from a pull
-// request. So it gets an allow-listed environment (no tokens, no GITHUB_ENV/GITHUB_PATH/ACTIONS_* files or
-// variables), a throwaway HOME and TMPDIR, a hard time limit that does not wait for escaped background
-// processes, and its output is cleaned before anyone sees it.
-import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, readdirSync, readFileSync } from 'node:fs'
+// Runs a repository's own commands (install, test, demo). This is running untrusted code with the job's
+// privileges: the same user can read other processes' environments in /proc, the runner's files and the
+// checkout's git config. Nothing here makes that safe; it only narrows what is handed over directly:
+//   - an allow-listed environment and a throwaway HOME/TMPDIR,
+//   - when bubblewrap (bwrap) works on this machine: a sandbox with no network, its own process and user
+//     namespaces and /proc, a read-only root, empty /home and /tmp, and only the clone writable,
+//   - a time limit, then a kill of the process group, the session, anything carrying the run marker and
+//     anything whose working folder is inside the clone (defence in depth; a determined process can escape it).
+import { spawn, spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, readdirSync, readFileSync, readlinkSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname, resolve, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { cleanBlock } from './sanitize.mjs'
 
@@ -30,33 +34,68 @@ export function safeEnv(parent = process.env, home = tmpdir(), extra = {}) {
   return { ...env, HOME: home, TMPDIR: home, TMP: home, TEMP: home, CI: 'true', SKILL_CI: '1', ...extra }
 }
 
-/** Linux: kills every process whose environment carries the run marker (catches setsid/nohup escapes). */
-export function killMarked(marker) {
-  let pids = []
-  try { pids = readdirSync('/proc').filter((d) => /^\d+$/.test(d)) } catch { return 0 }
+const BWRAP_HOME = '/tmp/skill-ci-home'
+
+/** bubblewrap arguments for a sandbox around `dir`. Folders on PATH under /home come back read-only (tool installs). */
+export function bwrapArgs(dir, { path = process.env.PATH ?? '', network = false } = {}) {
+  const args = ['--unshare-all', ...(network ? ['--share-net'] : []), '--die-with-parent', '--new-session',
+    '--ro-bind', '/', '/', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/home', '--tmpfs', '/tmp', '--tmpfs', '/run', '--tmpfs', '/root']
+  const back = new Set([dirname(dirname(process.execPath))])
+  for (const p of path.split(':')) if (p.startsWith('/home/') || p.startsWith('/root/')) back.add(p)
+  for (const p of back) if ((p.startsWith('/home/') || p.startsWith('/root/')) && existsSync(p)) args.push('--ro-bind', p, p)
+  args.push('--dir', BWRAP_HOME, '--bind', dir, dir, '--chdir', dir)
+  return args
+}
+
+let bwrapOk = null
+/** True when bubblewrap is installed and can create its namespaces here (it often cannot in containers or on Ubuntu 24.04 runners). */
+export function bwrapAvailable() {
+  if (bwrapOk !== null) return bwrapOk
+  if (process.platform !== 'linux' || process.env.SKILL_CI_NO_SANDBOX === '1') return (bwrapOk = false)
+  const probe = mkdtempSync(join(tmpdir(), 'skill-ci-probe-'))
+  try {
+    const r = spawnSync('bwrap', [...bwrapArgs(probe), 'true'], { stdio: 'ignore', timeout: 10000 })
+    bwrapOk = r.status === 0
+  } catch { bwrapOk = false } finally { rmSync(probe, { recursive: true, force: true }) }
+  return bwrapOk
+}
+
+const procs = () => { try { return readdirSync('/proc').filter((d) => /^\d+$/.test(d)).map(Number) } catch { return [] } }
+
+/**
+ * Linux, best effort: kills processes left behind by a run, found by the run marker in their environment,
+ * by session id, or by a working folder inside the clone.
+ */
+export function sweep({ marker, session, root } = {}) {
   let killed = 0
-  for (const pid of pids) {
-    if (Number(pid) === process.pid) continue
-    let env = ''
-    try { env = readFileSync(`/proc/${pid}/environ`, 'latin1') } catch { continue }
-    if (env.includes(`SKILL_CI_RUN=${marker}\0`)) { try { process.kill(Number(pid), 'SIGKILL'); killed++ } catch {} }
+  const realRoot = root ? resolve(root) : null
+  for (const pid of procs()) {
+    if (pid === process.pid || pid === 1) continue
+    let hit = false
+    if (marker) { try { hit = readFileSync(`/proc/${pid}/environ`, 'latin1').includes(`SKILL_CI_RUN=${marker}\0`) } catch {} }
+    if (!hit && session) { try { hit = Number(readFileSync(`/proc/${pid}/stat`, 'latin1').replace(/^.*\)\s/, '').split(' ')[3]) === session } catch {} }
+    if (!hit && realRoot) { try { const cwd = readlinkSync(`/proc/${pid}/cwd`); hit = cwd === realRoot || cwd.startsWith(realRoot + sep) } catch {} }
+    if (hit) { try { process.kill(pid, 'SIGKILL'); killed++ } catch {} }
   }
   return killed
 }
+export const killMarked = (marker) => sweep({ marker })
 
 /**
- * Runs `bash -c command` in cwd with a safe environment. Resolves when bash exits (or the time limit plus a
- * short grace passes), without waiting for background processes that keep the output pipes open; those, the
- * whole process group, and anything carrying the run marker are then killed.
- * -> { code, signal, timedOut, output, durationMs }
+ * Runs `bash -c command` in cwd (inside bubblewrap when sandbox and available). Resolves when bash exits or the
+ * time limit plus a short grace passes, without waiting for background processes holding the output pipes;
+ * leftovers are then swept. -> { code, signal, timedOut, output, durationMs, sandboxed }
  */
-export function runShell(command, { cwd, timeoutMs = 600000, env = process.env, onOutput } = {}) {
-  return new Promise((resolve) => {
+export function runShell(command, { cwd, timeoutMs = 600000, env = process.env, onOutput, sandbox = false, network = false } = {}) {
+  return new Promise((resolvePromise) => {
     const started = Date.now()
-    const home = mkdtempSync(join(tmpdir(), 'skill-ci-home-'))
+    const sandboxed = Boolean(sandbox) && bwrapAvailable()
+    const home = sandboxed ? null : mkdtempSync(join(tmpdir(), 'skill-ci-home-'))
     const marker = randomBytes(12).toString('hex')
+    const childEnv = safeEnv(env, sandboxed ? BWRAP_HOME : home, { SKILL_CI_RUN: marker })
     let output = '', timedOut = false, done = false, exitCode = null, exitSignal = null
-    const child = spawn('bash', ['-c', command], { cwd, env: safeEnv(env, home, { SKILL_CI_RUN: marker }), stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' })
+    const [cmd, args] = sandboxed ? ['bwrap', [...bwrapArgs(resolve(cwd), { path: childEnv.PATH, network }), 'bash', '-c', command]] : ['bash', ['-c', command]]
+    const child = spawn(cmd, args, { cwd, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' })
     const keep = (chunk) => {
       const s = chunk.toString()
       onOutput?.(s)
@@ -66,17 +105,17 @@ export function runShell(command, { cwd, timeoutMs = 600000, env = process.env, 
     child.stdout.on('data', keep)
     child.stderr.on('data', keep)
     const killGroup = (sig) => { try { process.kill(-child.pid, sig) } catch { try { child.kill(sig) } catch {} } }
+    let graceTimer = null
     const finish = () => {
       if (done) return
       done = true
       clearTimeout(timer); clearTimeout(graceTimer)
       killGroup('SIGKILL')
-      killMarked(marker)
+      sweep({ marker, session: child.pid, root: cwd })
       child.stdout.destroy(); child.stderr.destroy()
-      try { rmSync(home, { recursive: true, force: true }) } catch {}
-      resolve({ code: timedOut ? (exitCode ?? 124) : exitCode, signal: exitSignal, timedOut, output: cleanBlock(output), durationMs: Date.now() - started })
+      if (home) { try { rmSync(home, { recursive: true, force: true }) } catch {} }
+      resolvePromise({ code: timedOut ? (exitCode ?? 124) : exitCode, signal: exitSignal, timedOut, output: cleanBlock(output), durationMs: Date.now() - started, sandboxed })
     }
-    let graceTimer = null
     const timer = setTimeout(() => {
       if (exitCode !== null || exitSignal !== null) return
       timedOut = true

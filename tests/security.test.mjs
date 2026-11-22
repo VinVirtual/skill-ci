@@ -206,10 +206,24 @@ test('H5: a UTF-16 file is decoded and scanned', () => {
   assert.deepEqual(rules(checkSecrets(ctxFor(dir)).findings), ['secrets/aws-access-key'])
 })
 
-test('H5: binary content in a file of no known binary type is a warning', () => {
-  const dir = makeRepo(null, { files: { 'config.txt': Buffer.concat([Buffer.from([0]), Buffer.from(FAKE.aws)]), 'img.png': Buffer.from([0, 1, 2]) } })
+test('H5: binaries are scanned through their strings whatever their extension (ASCII and UTF-16 runs)', () => {
+  const u16 = Buffer.from(`k=${FAKE.github}`, 'utf16le')
+  const dir = makeRepo(null, { files: { 'config.txt': Buffer.concat([Buffer.from([0]), Buffer.from(FAKE.aws)]), 'img.png': Buffer.concat([Buffer.from([0x89, 0, 1]), u16, Buffer.from([0, 0, 7])]) } })
   const f = checkSecrets(ctxFor(dir)).findings
-  assert.deepEqual(f.map((x) => [x.rule, x.level, x.file]), [['secrets/not-scanned', 'warning', 'config.txt']])
+  assert.deepEqual(f.map((x) => [x.rule, x.level, x.file]), [['secrets/aws-access-key', 'error', 'config.txt'], ['secrets/github-token', 'error', 'img.png']])
+})
+
+test('H5: UTF-16 without a byte-order mark is detected and decoded', () => {
+  const dir = makeRepo(null, { files: { 'notes.txt': Buffer.from(`hello there\nkey ${FAKE.aws}\n`, 'utf16le') } })
+  assert.equal(readText(join(dir, 'notes.txt')).encoding, 'utf-16le')
+  assert.deepEqual(rules(checkSecrets(ctxFor(dir)).findings), ['secrets/aws-access-key'])
+})
+
+test('H5: a file too large to scan is an error', async () => {
+  const { MAX_TEXT_BYTES } = await import('../src/lib/files.mjs')
+  const dir = makeRepo(null, { files: { 'big.log': Buffer.alloc(MAX_TEXT_BYTES + 10, 0x61) } })
+  const f = checkSecrets(ctxFor(dir)).findings
+  assert.deepEqual(f.map((x) => [x.rule, x.level]), [['secrets/not-scanned', 'error']])
 })
 
 test('H5: secrets on very long lines are found (lines are scanned in pieces, not skipped)', () => {
@@ -256,7 +270,7 @@ test('M1: the summary stays under 1 MB', () => {
 
 // M2: Markdown injection
 test('M2: file names and values cannot add links, images or HTML to the summary', () => {
-  assert.equal(cell('see [x](https://evil.example) ![i](y) <img>'), 'see \\[x\\]\\(https://evil.example\\) \\!\\[i\\]\\(y\\) &lt;img&gt;')
+  assert.equal(cell('see [x](https://evil.example) ![i](y) <img> www.evil.example'), 'see \\[x\\]\\(https\\://evil.example\\) \\!\\[i\\]\\(y\\) &lt;img&gt; www\\.evil.example')
   assert.equal(code('a`b[x](y)'), 'a\\`b\\[x\\]\\(y\\)')
   assert.equal(code('plain|x'), '`plain\\|x`')
   const md = toMarkdown({ name: 'n`[x](y)', version: '0', result: 'fail', failOn: 'error', durationMs: 1, totals: { errors: 1, warnings: 0, notices: 0 }, checks: [{ id: 'x', title: 'X', status: 'fail', note: '', findings: [{ rule: 'x/y', level: 'error', message: 'm', file: '[evil](https://e.example)' }] }] })
@@ -351,4 +365,166 @@ test('LOW: a symlinked directory is not walked for demo outputs', () => {
   mkdirSync(join(dir, 'out2'))
   symlinkSync(out, join(dir, 'out2', 'escape'))
   assert.deepEqual(collectOutputs(dir, ['**/*.txt']).map((f) => f.file), ['out/ok.txt'])
+})
+
+// ---- second pass: commands are a trust decision, not an isolation claim ----
+import { bwrapAvailable, sweep } from '../src/lib/exec.mjs'
+import { safeCopy } from '../src/checks/demo.mjs'
+import { lockOverrides, configTrusted } from '../src/run.mjs'
+import { resolveConfig, DEFAULTS } from '../src/lib/config.mjs'
+import { lintSkill } from '../src/checks/skill-md.mjs'
+import { spawn } from 'node:child_process'
+
+test('P2-1: every event except push and same-repository pull requests is untrusted', () => {
+  for (const name of ['issue_comment', 'workflow_dispatch', 'schedule', 'workflow_run', 'pull_request_target', 'pull_request_review', 'release'])
+    assert.ok(untrustedEvent({ GITHUB_EVENT_NAME: name }), name)
+  assert.equal(untrustedEvent({ GITHUB_EVENT_NAME: 'push' }), null)
+  assert.ok(untrustedEvent({}))
+})
+
+const gh = (dir, args, event = 'push') => {
+  const out = mkdtempSync(join(tmpdir(), 'skill-ci-gh2-'))
+  for (const f of ['summary', 'output']) writeFileSync(join(out, f), '')
+  const env = { ...process.env, GITHUB_EVENT_NAME: event, GITHUB_REPOSITORY: 'o/good-skill', GITHUB_STEP_SUMMARY: join(out, 'summary'), GITHUB_OUTPUT: join(out, 'output') }
+  const r = spawnSync(process.execPath, [CLI, 'check', dir, '--github', ...args], { encoding: 'utf8', env })
+  return { r, summary: readFileSync(join(out, 'summary'), 'utf8'), output: readFileSync(join(out, 'output'), 'utf8') }
+}
+
+test('P2-1: under --github no repository code runs unless --run-commands is given', () => {
+  const dir = makeRepo('good-skill')
+  const off = gh(dir, [])
+  assert.match(off.output, /^tests-run=false$/m)
+  assert.match(off.summary, /fresh-clone test not run/)
+  assert.ok(!/ran repository code/.test(off.summary))
+  const on = gh(dir, ['--run-commands'])
+  assert.match(on.output, /^tests-run=true$/m)
+  assert.match(on.summary, /ran repository code with this job's privileges/)
+  const comment = gh(dir, ['--run-commands'], 'issue_comment')
+  assert.match(comment.output, /^tests-run=false$/m)
+  assert.match(comment.summary, /Untrusted run \(issue_comment event\)/)
+})
+
+test('P2-1: the summary says "sandboxed with bubblewrap" only when it was used', () => {
+  const dir = makeRepo('good-skill')
+  const plain = spawnSync(process.execPath, [CLI, 'check', dir, '--summary', join(dir, '..', 's.md')], { encoding: 'utf8', env: { ...process.env, SKILL_CI_NO_SANDBOX: '1' } })
+  assert.equal(plain.status, 0, plain.stdout)
+  const md = readFileSync(join(dir, '..', 's.md'), 'utf8')
+  assert.match(md, /ran repository code with this job's privileges\./)
+  assert.ok(!md.includes('bubblewrap'))
+  if (bwrapAvailable()) {
+    spawnSync(process.execPath, [CLI, 'check', dir, '--summary', join(dir, '..', 's2.md')], { encoding: 'utf8' })
+    assert.match(readFileSync(join(dir, '..', 's2.md'), 'utf8'), /sandboxed with bubblewrap/)
+  }
+})
+
+test('P2-1: inside bubblewrap the code cannot read ancestor environments, /home or the network', { skip: !bwrapAvailable() && 'bubblewrap not usable here' }, async () => {
+  const d = mkdtempSync(join(tmpdir(), 'skill-ci-bw-'))
+  const r = await runShell('cat /proc/1/environ 2>/dev/null | tr "\\0" "\\n" | grep -c SECRET_PARENT; ls /home | wc -l; cat /proc/1/comm; (exec 3<>/dev/tcp/1.1.1.1/80) 2>/dev/null && echo NET || echo NONET; touch made', { cwd: d, sandbox: true, env: { ...process.env, SECRET_PARENT: 'x' } })
+  assert.equal(r.sandboxed, true)
+  assert.match(r.output, /^0$/m)
+  assert.match(r.output, /NONET/)
+  assert.match(r.output, /bwrap|bash/)
+  assert.ok(existsSync(join(d, 'made')))
+})
+
+test('P2-1: the sweep kills processes whose working folder is inside the clone', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'skill-ci-sweep-'))
+  const p = spawn('sleep', ['30'], { cwd: d, detached: true, stdio: 'ignore' })
+  await new Promise((r) => setTimeout(r, 200))
+  assert.ok(sweep({ root: d }) >= 1)
+  await new Promise((r) => setTimeout(r, 200))
+  assert.throws(() => process.kill(p.pid, 0))
+})
+
+test('P2-2: action inputs fail closed: only the exact string "true" runs commands, anything but "false" locks the config', () => {
+  const action = parseYaml(readFileSync(new URL('../action.yml', import.meta.url), 'utf8'))
+  assert.equal(action.inputs['run-commands'].default, 'false')
+  const script = action.runs.steps.find((s) => s.id === 'check').run.replace(/node "\$GITHUB_ACTION_PATH[^\n]*/, 'printf "%s\\n" "${args[@]}"')
+  const argsFor = (run, lock) => {
+    const out = mkdtempSync(join(tmpdir(), 'skill-ci-in-'))
+    const r = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { PATH: process.env.PATH, GITHUB_OUTPUT: join(out, 'o'), SKILL_CI_PATH: '.', SKILL_CI_RUN: run, SKILL_CI_LOCK: lock, SKILL_CI_TRUST: 'True' } })
+    return r.stdout.split('\n')
+  }
+  for (const v of ['True', 'TRUE', 'yes', '1', 'garbage', '']) assert.ok(!argsFor(v, 'false').includes('--run-commands'), v)
+  assert.ok(argsFor('true', 'false').includes('--run-commands'))
+  for (const v of ['False', 'FALSE', 'no', '0', 'garbage', '']) assert.ok(argsFor('false', v).includes('--lock-config'), v)
+  assert.ok(!argsFor('false', 'false').includes('--lock-config'))
+  assert.ok(!argsFor('false', 'false').includes('--trust-pull-request'))
+})
+
+test('P2-3: demo copies refuse symlinked folders, symlinked files and paths that leave the clone', () => {
+  const root = mkdtempSync(join(tmpdir(), 'skill-ci-copy-'))
+  const out = outside()
+  mkdirSync(join(root, 'out'))
+  writeFileSync(join(root, 'out', 'ok.txt'), 'ok')
+  symlinkSync(join(out, 'secret.txt'), join(root, 'out', 'link.txt'))
+  symlinkSync(out, join(root, 'linkdir'))
+  const dest = mkdtempSync(join(tmpdir(), 'skill-ci-dest-'))
+  assert.equal(safeCopy(root, 'out/ok.txt', join(dest, 'a')), true)
+  assert.equal(readFileSync(join(dest, 'a'), 'utf8'), 'ok')
+  assert.equal(safeCopy(root, 'out/link.txt', join(dest, 'b')), false)
+  assert.equal(safeCopy(root, 'linkdir/secret.txt', join(dest, 'c')), false)
+  assert.equal(safeCopy(root, '../x', join(dest, 'd')), false)
+  assert.equal(safeCopy(root, '.git/config', join(dest, 'e')), false)
+})
+
+test('P2-4: lock-config also resets media, skills, name, max-runtime and sandbox', () => {
+  const c = lockOverrides(resolveConfig({ name: 'x-y', skills: ['a'], media: { 'max-file-mb': 900 }, 'max-runtime': 99999, sandbox: { mode: 'off', network: true } }))
+  assert.equal(c.name, null)
+  assert.equal(c.skills, null)
+  assert.deepEqual(c.media, DEFAULTS.media)
+  assert.equal(c['max-runtime'], DEFAULTS['max-runtime'])
+  assert.deepEqual(c.sandbox, DEFAULTS.sandbox)
+})
+
+test('P2-4: a config is trusted only when its real path is outside the workspace', () => {
+  const ws = mkdtempSync(join(tmpdir(), 'skill-ci-ws-'))
+  const base = mkdtempSync(join(tmpdir(), 'skill-ci-base-'))
+  writeFileSync(join(ws, 'c.yml'), '')
+  writeFileSync(join(base, 'c.yml'), '')
+  symlinkSync(join(ws, 'c.yml'), join(base, 'link.yml'))
+  assert.equal(configTrusted(join(base, 'c.yml'), ws, { GITHUB_WORKSPACE: ws }), true)
+  assert.equal(configTrusted(join(ws, 'c.yml'), ws, { GITHUB_WORKSPACE: ws }), false)
+  assert.equal(configTrusted(join(base, 'link.yml'), ws, { GITHUB_WORKSPACE: ws }), false) // resolves into the workspace
+  assert.equal(configTrusted(null, ws, {}), false)
+})
+
+test('P2-6: Markdown links past 2000 characters on one line are still checked; huge Markdown is an error', () => {
+  const links = relativeLinks('x'.repeat(5000) + ' [a](missing.md)')
+  assert.deepEqual(links.map((l) => l.target), ['missing.md'])
+  const dir = makeRepo('good-skill', { files: { 'SKILL.md': '---\nname: good-skill\ndescription: d\n---\n' + 'x'.repeat(1100 * 1024) } })
+  return import('../src/checks/skill-md.mjs').then(({ checkSkillMd }) => {
+    assert.deepEqual(checkSkillMd(ctxFor(dir)).findings.map((f) => f.rule), ['skill-md/too-large'])
+  })
+})
+
+test('P2-6: the description XML check is bounded', () => {
+  const desc = '<a' + ' x'.repeat(4000)
+  const { ms } = timed(() => lintSkill(`---\nname: a\ndescription: "${desc}"\n---\nbody\n`))
+  assert.ok(ms < 500)
+})
+
+test('P2-7: redaction covers bare assignments, Basic auth, cookies, AWS secrets and key bodies', () => {
+  const body = Array.from({ length: 5 }, () => 'Q'.repeat(64)).join('\n')
+  const out = redactText(`API_KEY=Zx81Hq20Lm55Kp9\nAuthorization: Basic dXNlcjpwYXNz\nCookie: session=abc123def\naws secret wJalrXUtnFEMIK7MDENGbPxRfiCY1234567890AB\n${body}\nok 1 tests passed`)
+  for (const v of ['Zx81Hq20Lm55Kp9', 'dXNlcjpwYXNz', 'session=abc123def', 'wJalrXUtnFEMIK7MDENGbPxRfiCY1234567890AB', 'QQQQQQQQ']) assert.ok(!out.includes(v), v)
+  assert.match(out, /ok 1 tests passed/)
+  assert.equal(redactText('x\n-----BEGIN ' + 'PRIVATE KEY-----\nAAAA\nBBBB'), 'x\n[redacted private key]')
+})
+
+test('P2-8: the clone keeps no reflog naming the checkout path', async () => {
+  const { freshClone } = await import('../src/checks/install.mjs')
+  const dir = makeRepo('good-skill')
+  const c = freshClone(dir, 'good-skill')
+  assert.ok(!existsSync(join(c.dest, '.git', 'logs')))
+  assert.ok(!readFileSync(join(c.dest, '.git', 'config'), 'utf8').includes(dir))
+})
+
+test('P2-8: a truncated summary closes its code fence before the note', () => {
+  const md = toMarkdown({ name: 'x', version: '0', result: 'fail', failOn: 'error', durationMs: 1, totals: { errors: 1, warnings: 0, notices: 0 }, checks: [{ id: 'install', title: 'I', status: 'fail', note: '', findings: [], details: { test: { command: 'c', code: 1, seconds: 1, output: ('y'.repeat(500) + '\n').repeat(9) + 'z'.repeat(2e6) } } }] })
+  const note = md.lastIndexOf('...the summary was cut')
+  assert.ok(note > 0)
+  const before = md.slice(0, note)
+  const fences = before.split('\n').filter((l) => /^`{3,}/.test(l))
+  assert.equal(fences.length % 2, 0)
 })

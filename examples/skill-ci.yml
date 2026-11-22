@@ -1,12 +1,11 @@
 # Copy to .github/workflows/skill-ci.yml in your skill repository.
-# Checks SKILL.md, README, LICENSE, secrets, script safety and media size, runs your tests in a fresh clone,
-# runs the demo from .skill-ci.yml (if any) and uploads its files, and writes the job summary.
 #
-# Security (see "Security" in the skill-ci README):
-# - Use `pull_request`, never `pull_request_target`: the latter runs fork code with secrets and a write token.
-# - Keep `persist-credentials: false` and `permissions: contents: read`, and give this job no secrets.
-# - For fork pull requests skill-ci runs no repository command and ignores the overrides a pull request could
-#   add to .skill-ci.yml / .skill-ci-allow; set lock-config: "true" to ignore them on every run.
+# Two jobs, on purpose:
+#   static    reads files only (SKILL.md, README, LICENSE, secrets, script safety, media). Safe for every pull request.
+#   commands  runs your tests in a fresh clone and the demo: that is running the repository's code with this job's
+#             privileges, so it runs only on pushes to main, in its own job with no token permissions, no secrets,
+#             no stored credentials and nothing after it.
+# Never use pull_request_target, workflow_run or issue_comment to run either job on someone else's code.
 name: skill-ci
 
 on:
@@ -14,13 +13,14 @@ on:
     branches: [main]
   pull_request:
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
-  skill-ci:
+  static:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -29,7 +29,20 @@ jobs:
       - uses: VinVirtual/skill-ci@0000000000000000000000000000000000000000 # v0.1.0
         with:
           path: .
-          # fail-on: warning          # stricter: warnings fail the job too
-          # run-commands: "false"     # only read files; skip the fresh-clone test and the demo
-          # lock-config: "true"       # ignore in-repo ignore/disable/fail-on/allowlists/inline allow comments
-          # badge-file: badge.json    # write a shields.io endpoint badge (publish it, e.g. to a gist)
+          lock-config: "true"          # a pull request cannot hide findings through .skill-ci.yml or allow comments
+          # fail-on: warning           # stricter: warnings fail the job too
+
+  commands:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions: {}                    # a private repository needs contents: read here to check out
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: VinVirtual/skill-ci@0000000000000000000000000000000000000000 # v0.1.0
+        with:
+          path: .
+          run-commands: "true"         # runs your repository's code; see "Security" in the skill-ci README
+      # no steps after this one: anything the repository's code left behind must find nothing to use

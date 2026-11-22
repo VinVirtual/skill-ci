@@ -3,7 +3,7 @@
 import { posix } from 'node:path'
 import { finding, suppressed } from '../lib/context.mjs'
 import { matchesAny } from '../lib/files.mjs'
-import { chunks } from './secrets.mjs'
+import { chunks } from '../lib/sanitize.mjs'
 
 const SHELL_EXT = /\.(sh|bash|zsh|ksh)$/i
 const JS_EXT = /\.(js|mjs|cjs|ts|mts|cts|jsx|tsx)$/i

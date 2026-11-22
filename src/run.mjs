@@ -1,6 +1,6 @@
 // Runs every enabled check over one repository and returns a report object.
 import { resolve, sep } from 'node:path'
-import { existsSync, statSync, readFileSync } from 'node:fs'
+import { existsSync, statSync, readFileSync, realpathSync } from 'node:fs'
 import { loadConfig, ConfigError, DEFAULTS } from './lib/config.mjs'
 import { buildContext, statusOf, finding } from './lib/context.mjs'
 import { checkSkillMd } from './checks/skill-md.mjs'
@@ -35,8 +35,7 @@ export async function runChecks(dir, options = {}) {
   const root = resolve(dir)
   if (!existsSync(root) || !statSync(root).isDirectory()) throw new ConfigError(`not a folder: ${dir}`)
   const { config, file: configFile } = loadConfig(root, options.config ?? null)
-  const inRepoConfig = !configFile || resolve(configFile).startsWith(root + sep) || !options.config
-  if (options.lockConfig && inRepoConfig) lockOverrides(config)
+  if (options.lockConfig && !configTrusted(configFile, root, options.env ?? process.env)) lockOverrides(config)
   if (options.name) config.name = options.name
   if (options.failOn) config['fail-on'] = options.failOn
   if (options.timeout) { config.test.timeout = options.timeout; config.demo.timeout = options.timeout }
@@ -47,9 +46,14 @@ export async function runChecks(dir, options = {}) {
   const checks = []
   const demoFiles = []
   let testsNotRun = false
+  const staticDeadline = started0 + STATIC_BUDGET_MS
   try {
   for (const c of CHECKS) {
     const t0 = Date.now()
+    if (!c.executes && t0 > staticDeadline && config.checks[c.id]) {
+      checks.push({ id: c.id, title: c.title, status: 'fail', findings: [finding(`${c.id}/not-run`, 'error', `Not run: the static checks used up their ${STATIC_BUDGET_MS / 1000} s budget.`)], note: 'time budget used up', ms: 0 })
+      continue
+    }
     const base = { id: c.id, title: c.title }
     let skipReason = null
     if (!config.checks[c.id]) skipReason = 'turned off in .skill-ci.yml'
@@ -87,6 +91,8 @@ export async function runChecks(dir, options = {}) {
     failOn: config['fail-on'],
     result: totals.errors ? 'fail' : totals.warnings ? 'warn' : 'pass',
     testsNotRun,
+    ranCommands: Boolean(ctx.ranCommands),
+    sandboxed: Boolean(ctx.sandboxUsed),
     configLocked: Boolean(options.lockConfig),
     totals,
     durationMs: Date.now() - started,
@@ -95,8 +101,27 @@ export async function runChecks(dir, options = {}) {
   }
 }
 
+export const STATIC_BUDGET_MS = 300000
+
+/**
+ * A config file is trusted when its real path is outside the workspace (for example the base branch's copy
+ * checked out elsewhere). Inside the workspace a pull request could have written it, so locked rules apply.
+ */
+export function configTrusted(configFile, root, env = process.env) {
+  if (!configFile) return false
+  const real = (p) => { try { return realpathSync(p) } catch { return resolve(p) } }
+  const ws = real(env.GITHUB_WORKSPACE || root)
+  const file = real(configFile)
+  return !(file === ws || file.startsWith(ws + sep))
+}
+
 /** Puts every setting a pull request could use to hide findings back to its default. */
 export function lockOverrides(config) {
+  config.name = DEFAULTS.name
+  config.skills = DEFAULTS.skills
+  config.media = { ...DEFAULTS.media }
+  config['max-runtime'] = DEFAULTS['max-runtime']
+  config.sandbox = { ...DEFAULTS.sandbox }
   config.ignore = []
   config.disable = []
   config['fail-on'] = DEFAULTS['fail-on']

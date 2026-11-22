@@ -85,9 +85,9 @@ test('checkSecrets walks the repo, flags sensitive files and honours the allowli
   assert.deepEqual(checkSecrets(ctxFor(allowed)).findings, [])
 })
 
-test('binary files are skipped; .env.example is not a sensitive file', () => {
+test('binary files are scanned for key formats through their strings; .env.example is not a sensitive file', () => {
   const dir = makeRepo(null, { files: { 'img.bin': Buffer.concat([Buffer.from([0, 1, 2]), Buffer.from(FAKE.aws)]), '.env.example': 'TOKEN=\n' } })
-  assert.deepEqual(checkSecrets(ctxFor(dir)).findings, [])
+  assert.deepEqual(checkSecrets(ctxFor(dir)).findings.map((f) => [f.rule, f.file]), [['secrets/aws-access-key', 'img.bin']])
 })
 
 test('mask shows no character of the value, only its length', () => {

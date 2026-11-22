@@ -20,7 +20,7 @@ $S/examples/                 a workflow to copy, and the example reports
 
 1. **Check the machine**: `$S/check_env.sh`. Node 20+, git and bash.
 2. **First pass without running anything**: `$S/skill-ci check <repo> --no-run --verbose`. This reads files only. Show the user the errors first, then the warnings.
-3. **Full pass**: `$S/skill-ci check <repo> --verbose`. This also clones the repo's last commit into a temp folder and runs its test command there (`test.command` in `.skill-ci.yml`, else inferred from `package.json`, the test step of the repo's CI workflow, pytest files or a Makefile), then runs the demo if one is configured. It runs the repo's own code, so only do it for a repo the user trusts (their own).
+3. **Full pass** (only for a repo the user owns and trusts): `$S/skill-ci check <repo> --verbose`. This also clones the repo's last commit into a temp folder and runs its test command there (`test.command` in `.skill-ci.yml`, else inferred from `package.json`, the test step of the repo's CI workflow, pytest files or a Makefile), then runs the demo if one is configured. It runs the repo's own code, so only do it for a repo the user trusts (their own).
 4. **Fix with the user**, one finding at a time. Every finding names its rule (`skill-md/name-mismatch`) and usually a fix. Do not change the user's skill without asking.
 5. **CI**: copy `examples/skill-ci.yml` to the repo's `.github/workflows/`. It runs on pushes and pull requests, writes the job summary, annotates files, and uploads the demo files.
 6. **Settings**: `$S/skill-ci init <repo>` writes a starter `.skill-ci.yml` with every key and its default.
@@ -40,7 +40,7 @@ $S/examples/                 a workflow to copy, and the example reports
 
 ## Security
 
-The fresh-clone test and demo run the repo's own code, in a throwaway clone with a scrubbed environment (no tokens, no `GITHUB_*`/`ACTIONS_*`) and hard time limits. In CI, fork pull requests and `pull_request_target` never run commands, and in-repo overrides are ignored for them. `--lock-config` does that everywhere. Recommend `pull_request` (never `pull_request_target`), `persist-credentials: false`, `permissions: contents: read` and no secrets in the job, as in `examples/skill-ci.yml`.
+The fresh-clone test and demo **run the repo's own code with the privileges of whoever runs them**. skill-ci narrows what it hands over (allow-listed environment, throwaway clone, time limits, bubblewrap when available), but it does not isolate. Run them only on the user's own, trusted repository; otherwise use `--no-run`. In CI they are off unless `run-commands: "true"`. They never run for fork pull requests, `pull_request_target`, `workflow_run` or `issue_comment`. Put them in a separate job with `permissions: {}`, `persist-credentials: false`, no secrets and no later steps, as in `examples/skill-ci.yml`. `--lock-config` ignores in-repo settings that could hide findings.
 
 ## False positives
 

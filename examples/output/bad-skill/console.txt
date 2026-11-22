@@ -50,14 +50,14 @@ skill-ci 0.1.0  bad-skill  bad-skill
          warning scripts/helper.py:11  `yaml.load` without SafeLoader can build arbitrary Python objects from the file.  [footguns/unsafe-yaml-load]
                  fix: Use yaml.safe_load.
   PASS Media size budget           0 media files, 0.00 MB of 15 MB
-  FAIL Fresh-clone install test    `npm test` failed in 0.5 s
+  FAIL Fresh-clone install test    `npm test` failed in 0.6 s
          error   In a fresh clone, the test command `npm test` failed with exit code 1.  [install/test-failed]
                  fix: Run it in a fresh clone yourself: a file that is ignored or never committed is the usual cause.
            | 
            | > bad-skill@0.0.1 test
            | > node --test
            | 
-           | ✖ reads the local data file (1.302348ms)
+           | ✖ reads the local data file (1.511688ms)
            | ℹ tests 1
            | ℹ suites 0
            | ℹ pass 0
@@ -65,15 +65,15 @@ skill-ci 0.1.0  bad-skill  bad-skill
            | ℹ cancelled 0
            | ℹ skipped 0
            | ℹ todo 0
-           | ℹ duration_ms 129.876945
+           | ℹ duration_ms 131.799538
            | 
            | ✖ failing tests:
            | 
            | test at tests/data.test.mjs:5:1
-           | ✖ reads the local data file (1.302348ms)
-           |   Error: ENOENT: no such file or directory, open '/tmp/skill-ci-clone-FUmdR4/bad-skill/local-data.json'
+           | ✖ reads the local data file (1.511688ms)
+           |   Error: ENOENT: no such file or directory, open '/tmp/skill-ci-clone-W9udU2/bad-skill/local-data.json'
            |       at readFileSync (node:fs:483:20)
-           |       at TestContext.<anonymous> (file:///tmp/skill-ci-clone-FUmdR4/bad-skill/tests/data.test.mjs:6:27)
+           |       at TestContext.<anonymous> (file:///tmp/skill-ci-clone-W9udU2/bad-skill/tests/data.test.mjs:6:27)
            |       at Test.runInAsyncScope (node:async_hooks:227:14)
            |       at Test.run (node:internal/test_runner/test:1402:25)
            |       at Test.start (node:internal/test_runner/test:1262:17)
@@ -81,7 +81,7 @@ skill-ci 0.1.0  bad-skill  bad-skill
            |     errno: -2,
            |     code: 'ENOENT',
            |     syscall: 'open',
-           |     path: '/tmp/skill-ci-clone-FUmdR4/bad-skill/local-data.json'
+           |     path: '/tmp/skill-ci-clone-W9udU2/bad-skill/local-data.json'
            |   }
   SKIP Demo                        no demo.command set
-  Result: FAIL  10 errors, 18 warnings, 0 notices  (0.5 s)
+  Result: FAIL  10 errors, 18 warnings, 0 notices  (0.7 s)

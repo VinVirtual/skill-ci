@@ -13,7 +13,7 @@ export function inline(text) {
     s = s.replace(/<[^>]*>|&(?![a-z]+;|#\d+;)|>/gi, (m) => (ALLOWED_TAGS.test(m) ? m : esc(m)))
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     s = s.replace(/(?<!\\)\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, href) => (/^(https?:|#)/.test(href) ? `<a href="${esc(href)}">${label}</a>` : label))
-    return s.replace(/\\([\\`*_[\]()!#~|])/g, '$1') // backslash escapes from escapeMd
+    return s.replace(/\\([\\`*_[\]()!#~|:.])/g, '$1') // backslash escapes from escapeMd
   }).join('')
     // a link whose label is a code span was split apart above; join it back
     .replace(/\[(<code>[^<]*<\/code>)\]\(([^)\s]+)\)/g, (_, label, href) => (/^(https?:|#)/.test(href) ? `<a href="${esc(href)}">${label}</a>` : label))

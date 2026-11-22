@@ -9,6 +9,7 @@ export const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 export const MAX_NAME = 64
 export const MAX_DESCRIPTION = 1024
 export const MAX_BODY_LINES = 500
+export const MAX_MARKDOWN = 1024 * 1024
 const RESERVED = ['anthropic', 'claude']
 const WHEN_RE = /\b(use (it |this |this skill )?(when|whenever|for|to|if|on)|when (the user|you|someone|a user|asked)|trigger|whenever|asks? (for|to|about))\b/i
 
@@ -53,7 +54,7 @@ export function lintSkill(text, { file = 'SKILL.md', expectedName = null, exists
     const line = keyLine('description')
     const len = [...description].length
     if (len > MAX_DESCRIPTION) add('description-too-long', 'error', `description is ${len} characters; the limit is ${MAX_DESCRIPTION}.`, line, { hint: 'Keep what it does and the trigger phrases; move detail into the body.' })
-    if (/<\/?[A-Za-z][\w-]*[^>]*>/.test(description)) add('description-xml', 'error', 'description contains an XML/HTML tag, which skill descriptions may not hold.', line)
+    if (/<\/?[A-Za-z][\w-]{0,60}[^<>]{0,300}>/.test(description)) add('description-xml', 'error', 'description contains an XML/HTML tag, which skill descriptions may not hold.', line)
     if (len < 40) add('description-short', 'warning', `description is only ${len} characters; say what the skill does and when to use it.`, line)
     else if (!WHEN_RE.test(description)) add('description-no-trigger', 'warning', 'description does not say when to use the skill (for example "Use when ...").', line)
   }
@@ -101,6 +102,7 @@ export function checkSkillMd(ctx) {
   for (const file of files) {
     if (matchesAny(file, ctx.config.ignore)) continue
     const text = ctx.exists(file) ? ctx.read(file) : null
+    if (text !== null && text.length > MAX_MARKDOWN) { findings.push(finding('skill-md/too-large', 'error', `${file} is over ${MAX_MARKDOWN / 1024} KB; it was not checked.`, { file })); continue }
     if (text === null) { findings.push(finding('skill-md/missing', 'error', `${file} is not in the repository (or is not text).`, { file })); continue }
     const dir = posix.dirname(file)
     const expectedName = dir === '.' ? ctx.repoName : posix.basename(dir)
