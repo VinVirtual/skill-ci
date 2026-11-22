@@ -1,6 +1,7 @@
 # skill-ci checks itself with these settings.
 ignore:
   - "tests/fixtures/**"     # the bad fixture is broken on purpose
+  - "examples/output/**"    # reports about that fixture quote its findings
 footguns:
   # These files name the risky patterns on purpose: the rule definitions, the tests that feed them examples,
   # and the docs that explain them. The defaults (vendor/**, third_party/**, dist/**, *.min.js) are kept.
