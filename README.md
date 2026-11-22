@@ -155,7 +155,7 @@ Outputs: `result` (`pass`, `warn`, `fail`), `errors`, `warnings`, `tests-run`, `
 ## Development
 
 ```bash
-./skill-ci test      # 168 tests with node --test: the YAML reader, config validation, globs, every check on
+./skill-ci test      # 169 tests with node --test: the YAML reader, config validation, globs, every check on
                      # strings and on throwaway git repos built from the fixtures, fresh clones, the demo,
                      # Markdown/HTML/annotation/badge output, the command line end to end, and security
                      # regressions (event trust, fail-closed inputs, environment allow-list, bubblewrap when
