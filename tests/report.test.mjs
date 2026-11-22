@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { toMarkdown, toConsole, cell, where, linkBaseFrom } from '../src/report/markdown.mjs'
 import { annotation, writeOutputs, badge } from '../src/report/github.mjs'
 import { markdownToHtml, summaryPage, inline } from '../src/report/html.mjs'
-import { makeRepo, cleanup, CLI } from './helpers.mjs'
+import { makeRepo, cleanup, CLI, cleanEnv } from './helpers.mjs'
 
 after(cleanup)
 
@@ -125,7 +125,7 @@ test('CLI: --github writes annotations, the job summary and step outputs', () =>
   const out = mkdtempSync(join(tmpdir(), 'skill-ci-gh-'))
   writeFileSync(join(out, 'summary'), '')
   writeFileSync(join(out, 'output'), '')
-  const env = { ...process.env, GITHUB_STEP_SUMMARY: join(out, 'summary'), GITHUB_OUTPUT: join(out, 'output'), GITHUB_WORKSPACE: dir, GITHUB_REPOSITORY: 'o/bad-skill', GITHUB_SERVER_URL: 'https://github.com', GITHUB_SHA: 'abc' }
+  const env = cleanEnv({ GITHUB_STEP_SUMMARY: join(out, 'summary'), GITHUB_OUTPUT: join(out, 'output'), GITHUB_WORKSPACE: dir, GITHUB_REPOSITORY: 'o/bad-skill', GITHUB_SERVER_URL: 'https://github.com', GITHUB_SHA: 'abc' })
   const r = cli(['check', dir, '--github', '--no-run'], { env })
   assert.equal(r.status, 1)
   assert.match(r.stdout, /^::error file=SKILL.md,line=2,title=skill-ci skill-md\/name-not-kebab::/m)

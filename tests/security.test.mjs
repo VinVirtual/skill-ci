@@ -19,7 +19,7 @@ import { runChecks } from '../src/run.mjs'
 import { toMarkdown, cell, code } from '../src/report/markdown.mjs'
 import { badge, annotation } from '../src/report/github.mjs'
 import { untrustedEvent } from '../src/cli.mjs'
-import { makeRepo, ctxFor, cleanup, CLI, FAKE } from './helpers.mjs'
+import { makeRepo, ctxFor, cleanup, CLI, FAKE, cleanEnv } from './helpers.mjs'
 
 after(cleanup)
 
@@ -75,7 +75,7 @@ test('C1: in --github mode a fork pull request runs no repository command and lo
   const out = mkdtempSync(join(tmpdir(), 'skill-ci-fork-'))
   writeFileSync(join(out, 'event.json'), JSON.stringify({ pull_request: { head: { repo: { full_name: 'evil/fork' } }, base: { repo: { full_name: 'o/good-skill' } } } }))
   for (const f of ['summary', 'output']) writeFileSync(join(out, f), '')
-  const env = { ...process.env, GITHUB_EVENT_NAME: 'pull_request', GITHUB_EVENT_PATH: join(out, 'event.json'), GITHUB_REPOSITORY: 'o/good-skill', GITHUB_STEP_SUMMARY: join(out, 'summary'), GITHUB_OUTPUT: join(out, 'output') }
+  const env = cleanEnv({ GITHUB_EVENT_NAME: 'pull_request', GITHUB_EVENT_PATH: join(out, 'event.json'), GITHUB_REPOSITORY: 'o/good-skill', GITHUB_STEP_SUMMARY: join(out, 'summary'), GITHUB_OUTPUT: join(out, 'output') })
   const r = spawnSync(process.execPath, [CLI, 'check', dir, '--github'], { encoding: 'utf8', env })
   assert.equal(r.status, 1, r.stdout + r.stderr) // the AWS key is reported although the PR's config disabled secrets
   assert.match(r.stdout, /secrets\/aws-access-key/)
@@ -97,7 +97,7 @@ test('H1: control characters are removed from every finding and annotation', () 
 
 test('H1: in --github mode everything except annotations is printed inside stop-commands', () => {
   const dir = makeRepo('good-skill', { files: { ['evil\n::warning::injected.md']: 'x' } })
-  const r = spawnSync(process.execPath, [CLI, 'check', dir, '--github', '--no-run', '--verbose'], { encoding: 'utf8', env: { ...process.env, GITHUB_EVENT_NAME: 'push' } })
+  const r = spawnSync(process.execPath, [CLI, 'check', dir, '--github', '--no-run', '--verbose'], { encoding: 'utf8', env: cleanEnv({ GITHUB_EVENT_NAME: 'push' }) })
   const lines = r.stdout.split('\n')
   const start = lines.findIndex((l) => l.startsWith('::stop-commands::'))
   assert.equal(start, 0)
@@ -385,7 +385,7 @@ test('P2-1: every event except push and same-repository pull requests is untrust
 const gh = (dir, args, event = 'push') => {
   const out = mkdtempSync(join(tmpdir(), 'skill-ci-gh2-'))
   for (const f of ['summary', 'output']) writeFileSync(join(out, f), '')
-  const env = { ...process.env, GITHUB_EVENT_NAME: event, GITHUB_REPOSITORY: 'o/good-skill', GITHUB_STEP_SUMMARY: join(out, 'summary'), GITHUB_OUTPUT: join(out, 'output') }
+  const env = cleanEnv({ GITHUB_EVENT_NAME: event, GITHUB_REPOSITORY: 'o/good-skill', GITHUB_STEP_SUMMARY: join(out, 'summary'), GITHUB_OUTPUT: join(out, 'output') })
   const r = spawnSync(process.execPath, [CLI, 'check', dir, '--github', ...args], { encoding: 'utf8', env })
   return { r, summary: readFileSync(join(out, 'summary'), 'utf8'), output: readFileSync(join(out, 'output'), 'utf8') }
 }
@@ -406,7 +406,7 @@ test('P2-1: under --github no repository code runs unless --run-commands is give
 
 test('P2-1: the summary says "sandboxed with bubblewrap" only when it was used', () => {
   const dir = makeRepo('good-skill')
-  const plain = spawnSync(process.execPath, [CLI, 'check', dir, '--summary', join(dir, '..', 's.md')], { encoding: 'utf8', env: { ...process.env, SKILL_CI_NO_SANDBOX: '1' } })
+  const plain = spawnSync(process.execPath, [CLI, 'check', dir, '--summary', join(dir, '..', 's.md')], { encoding: 'utf8', env: cleanEnv({ SKILL_CI_NO_SANDBOX: '1' }) })
   assert.equal(plain.status, 0, plain.stdout)
   const md = readFileSync(join(dir, '..', 's.md'), 'utf8')
   assert.match(md, /ran repository code with this job's privileges\./)
@@ -419,7 +419,7 @@ test('P2-1: the summary says "sandboxed with bubblewrap" only when it was used',
 
 test('P2-1: inside bubblewrap the code cannot read ancestor environments, /home or the network', { skip: !bwrapAvailable() && 'bubblewrap not usable here' }, async () => {
   const d = mkdtempSync(join(tmpdir(), 'skill-ci-bw-'))
-  const r = await runShell('cat /proc/1/environ 2>/dev/null | tr "\\0" "\\n" | grep -c SECRET_PARENT; ls /home | wc -l; cat /proc/1/comm; (exec 3<>/dev/tcp/1.1.1.1/80) 2>/dev/null && echo NET || echo NONET; touch made', { cwd: d, sandbox: true, env: { ...process.env, SECRET_PARENT: 'x' } })
+  const r = await runShell('cat /proc/1/environ 2>/dev/null | tr "\\0" "\\n" | grep -c SECRET_PARENT; ls /home | wc -l; cat /proc/1/comm; (exec 3<>/dev/tcp/1.1.1.1/80) 2>/dev/null && echo NET || echo NONET; touch made', { cwd: d, sandbox: true, env: cleanEnv({ SECRET_PARENT: 'x' }) })
   assert.equal(r.sandboxed, true)
   assert.match(r.output, /^0$/m)
   assert.match(r.output, /NONET/)
@@ -500,6 +500,15 @@ test('P2-4: a config is trusted only when its real path is outside the workspace
   assert.equal(configTrusted(join(ws, 'c.yml'), ws, { GITHUB_WORKSPACE: ws }), false)
   assert.equal(configTrusted(join(base, 'link.yml'), ws, { GITHUB_WORKSPACE: ws }), false) // resolves into the workspace
   assert.equal(configTrusted(null, ws, {}), false)
+  // a repository checked outside the workspace: its own config is still never trusted
+  const repo = mkdtempSync(join(tmpdir(), 'skill-ci-repo-'))
+  writeFileSync(join(repo, '.skill-ci.yml'), '')
+  assert.equal(configTrusted(join(repo, '.skill-ci.yml'), repo, { GITHUB_WORKSPACE: ws }), false)
+  assert.equal(configTrusted(join(base, 'c.yml'), repo, { GITHUB_WORKSPACE: ws }), true)
+})
+
+test('CI: the suite does not depend on the runner environment', () => {
+  for (const k of Object.keys(process.env)) assert.ok(!/^(GITHUB_|RUNNER_|ACTIONS_)/.test(k), k)
 })
 
 test('P2-6: Markdown links past 2000 characters on one line are still checked; huge Markdown is an error', () => {

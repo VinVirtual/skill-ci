@@ -8,6 +8,17 @@ import { fileURLToPath } from 'node:url'
 import { resolveConfig } from '../src/lib/config.mjs'
 import { buildContext } from '../src/lib/context.mjs'
 
+/** Variables a CI runner sets that change skill-ci's behaviour. Tests start without them, and set what they need. */
+export const RUNNER_VARS = /^(GITHUB_|RUNNER_|ACTIONS_|INPUT_|SKILL_CI_)|^CI$/
+for (const k of Object.keys(process.env)) if (RUNNER_VARS.test(k)) delete process.env[k]
+
+/** A clean environment for a spawned CLI: no runner variables, plus the ones a test sets. */
+export function cleanEnv(extra = {}) {
+  const env = {}
+  for (const [k, v] of Object.entries(process.env)) if (!RUNNER_VARS.test(k)) env[k] = v
+  return { ...env, ...extra }
+}
+
 export const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli.mjs')
 

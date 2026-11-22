@@ -104,15 +104,17 @@ export async function runChecks(dir, options = {}) {
 export const STATIC_BUDGET_MS = 300000
 
 /**
- * A config file is trusted when its real path is outside the workspace (for example the base branch's copy
- * checked out elsewhere). Inside the workspace a pull request could have written it, so locked rules apply.
+ * A config file is trusted only when its real path is outside both the checked repository and the workspace
+ * (for example the base branch's copy checked out elsewhere). Anything a pull request could have written is not.
  */
 export function configTrusted(configFile, root, env = process.env) {
   if (!configFile) return false
   const real = (p) => { try { return realpathSync(p) } catch { return resolve(p) } }
-  const ws = real(env.GITHUB_WORKSPACE || root)
+  const within = (file, dir) => file === dir || file.startsWith(dir + sep)
   const file = real(configFile)
-  return !(file === ws || file.startsWith(ws + sep))
+  if (within(file, real(root))) return false
+  if (env.GITHUB_WORKSPACE && within(file, real(env.GITHUB_WORKSPACE))) return false
+  return true
 }
 
 /** Puts every setting a pull request could use to hide findings back to its default. */
